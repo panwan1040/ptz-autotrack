@@ -1,0 +1,19 @@
+[Unit]
+Description=PTZ AutoTrack Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ptz-autotrack
+EnvironmentFile=/opt/ptz-autotrack/.env
+ExecStart=/opt/ptz-autotrack/.venv/bin/ptz-autotrack run
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+User=ptz
+Group=ptz
+
+[Install]
+WantedBy=multi-user.target

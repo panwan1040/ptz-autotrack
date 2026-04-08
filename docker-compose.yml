@@ -1,0 +1,14 @@
+version: '3.9'
+services:
+  ptz-autotrack:
+    build: .
+    image: ptz-autotrack:latest
+    env_file:
+      - .env
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./artifacts:/app/artifacts
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    command: ["ptz-autotrack", "run"]

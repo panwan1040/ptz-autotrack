@@ -1,0 +1,100 @@
+app:
+  name: ptz-autotrack
+  environment: development
+  log_level: INFO
+  debug_window: false
+  overlay: false
+  detect_only: false
+  dry_run_ptz: true
+  save_action_screenshots: false
+  screenshot_dir: ./artifacts/screenshots
+  snapshot_dir: ./artifacts/snapshots
+  api:
+    enabled: true
+    host: 0.0.0.0
+    port: 8080
+    metrics_enabled: true
+
+camera:
+  host: 192.168.1.100
+  username: admin
+  password: change-me
+  rtsp_port: 554
+  http_port: 80
+  channel: 1
+  rtsp_path: /cam/realmonitor?channel=1&subtype=1
+  timeout_seconds: 3.0
+  connect_timeout_seconds: 10.0
+  home_preset_name: Home
+  startup_preset_name: null
+
+video:
+  resize_width: 960
+  resize_height: 540
+  queue_size: 2
+  reconnect_backoff_seconds: 2.0
+  read_retry_delay_seconds: 0.2
+  target_fps: 10.0
+
+detection:
+  model_path: yolov8n.pt
+  confidence: 0.45
+  iou: 0.5
+  imgsz: 640
+  device: cpu
+  half: false
+  classes:
+    - person
+
+tracking:
+  strategy: stick_nearest
+  min_persist_frames: 3
+  lost_timeout_seconds: 2.0
+  switch_margin_ratio: 0.25
+  ema_alpha: 0.35
+  max_association_distance: 0.18
+
+control:
+  enabled: true
+  tick_hz: 5.0
+  dead_zone_x: 0.10
+  dead_zone_y: 0.12
+  movement_cooldown_seconds: 0.25
+  zoom_cooldown_seconds: 1.2
+  aggressive_pan_threshold: 0.30
+  aggressive_tilt_threshold: 0.30
+  pan_pulse_ms_small: 120
+  pan_pulse_ms_large: 220
+  tilt_pulse_ms_small: 120
+  tilt_pulse_ms_large: 220
+  diagonal_pulse_ms: 160
+  zoom_pulse_ms: 180
+  startup_stable_frames: 5
+  max_command_rate_hz: 4.0
+  allow_zoom_during_pan_tilt: false
+  lost_behavior: hold
+  lost_zoom_out_enabled: true
+  lost_zoom_out_cooldown_seconds: 5.0
+  return_home_timeout_seconds: 30.0
+  zoom:
+    enabled: true
+    target_height_ratio: 0.38
+    min_height_ratio: 0.24
+    max_height_ratio: 0.52
+    hysteresis: 0.04
+
+ptz:
+  auth_mode: digest_or_basic
+  verify_ssl: false
+  request_timeout_seconds: 2.0
+  command_retry_count: 2
+  command_retry_backoff_seconds: 0.2
+  speed: 1
+  debounce_seconds: 0.05
+  dry_run: true
+
+snapshots:
+  on_target_acquired: true
+  on_target_lost: true
+  periodic_debug_frame_seconds: 0
+  max_files: 200
