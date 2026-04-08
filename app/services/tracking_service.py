@@ -17,7 +17,16 @@ from app.control.smoothing import EmaSmoother
 from app.control.zoom_logic import ZoomController
 from app.detection.yolo_detector import Detector
 from app.logging_config import get_logger
-from app.models.runtime import ControlDecision, Detection, PtzDirection, TargetState, TrackStatus, TrackingSnapshot
+from app.models.runtime import (
+    ControlDecision,
+    Detection,
+    PtzDirection,
+    TargetState,
+    TrackStatus,
+    TrackingPhase,
+    TrackingSnapshot,
+    compatibility_status_for_phase,
+)
 from app.services.metrics import MetricsRegistry
 from app.services.overlay import draw_overlay
 from app.services.snapshot_manager import SnapshotManager
@@ -64,6 +73,9 @@ class TrackingService:
         self._previous_target = TargetState(track_id=None, bbox_xyxy=None)
         self._loss_started_at: float | None = None
         self._return_home_issued = False
+        self._tracking_phase = TrackingPhase.IDLE
+        self._last_ptz_action: str | None = None
+        self._last_skip_reason: str | None = None
 
     @property
     def state_store(self) -> StateStore:
@@ -79,6 +91,7 @@ class TrackingService:
     def start(self) -> None:
         self.install_signal_handlers()
         self._start_api()
+        self._tracking_phase = TrackingPhase.SEARCHING
         self._reader.start()
         startup = self._ptz.startup_preset()
         logger.info(
@@ -93,6 +106,7 @@ class TrackingService:
         if self._stop_event.is_set():
             return
         self._stop_event.set()
+        self._tracking_phase = TrackingPhase.IDLE
         logger.info("tracking_service_stopping")
         self._reader.stop()
         self._ptz.emergency_stop()
@@ -103,6 +117,7 @@ class TrackingService:
 
     def run_loop(self) -> None:
         logger.info("tracking_service_started")
+        self._tracking_phase = TrackingPhase.SEARCHING
         sleep_seconds = 1.0 / max(1.0, self._config.control.tick_hz)
         try:
             while not self._stop_event.is_set():
@@ -160,6 +175,7 @@ class TrackingService:
                 self._previous_target = self._copy_target_state(target_state)
                 time.sleep(sleep_seconds)
         except Exception as exc:
+            self._tracking_phase = TrackingPhase.ERROR
             logger.exception("tracking_service_exception", error=str(exc))
             self._ptz.emergency_stop()
             raise
@@ -173,7 +189,10 @@ class TrackingService:
         current: TargetState,
         now: float,
     ) -> None:
-        self._log_state_transition(previous, current, now)
+        phase_before = self._tracking_phase
+        self._tracking_phase = self._determine_phase(current)
+        current.status = compatibility_status_for_phase(self._tracking_phase)
+        self._log_state_transition(previous, current, now, phase_before)
 
         if current.status == TrackStatus.TRACKING:
             self._startup_frames += 1
@@ -207,6 +226,7 @@ class TrackingService:
             if self._lost_zoom_cooldown.ready(now):
                 result = self._ptz.pulse(PtzDirection.ZOOM_OUT, self._config.control.zoom_pulse_ms)
                 self._lost_zoom_cooldown.mark(now)
+                self._last_ptz_action = PtzDirection.ZOOM_OUT.value
                 logger.info(
                     "tracking_loss_zoom_out",
                     success=result.success,
@@ -218,12 +238,18 @@ class TrackingService:
             if loss_age >= self._config.control.return_home_timeout_seconds:
                 result = self._ptz.move_home()
                 self._return_home_issued = result.success
+                if result.success:
+                    self._tracking_phase = TrackingPhase.RETURNING_HOME
+                    self._last_ptz_action = "return_home"
                 logger.info(
                     "tracking_return_home",
                     success=result.success,
                     detail=result.detail,
                     loss_age=loss_age,
                 )
+            elif not self._config.camera.home_preset_name:
+                if self._skip_log_debouncer.allow("tracking_return_home_disabled", now):
+                    logger.info("tracking_return_home_disabled", reason="home_preset_not_configured")
 
     def _execute_decision(
         self,
@@ -234,6 +260,7 @@ class TrackingService:
     ) -> None:
         skip_reason = self._decision_skip_reason(target_state, decision, now)
         if skip_reason is not None:
+            self._last_skip_reason = skip_reason
             if self._skip_log_debouncer.allow(skip_reason, now):
                 logger.info("ptz_action_skipped", reason=skip_reason, status=target_state.status.value)
             return
@@ -245,6 +272,8 @@ class TrackingService:
                 result = self._ptz.pulse(decision.move_direction, decision.move_pulse_ms)
                 self._metrics.ptz_commands.inc()
                 self._move_cooldown.mark(now)
+                self._last_ptz_action = decision.move_direction.value
+                self._last_skip_reason = None
                 self._save_action_screenshot(frame, decision.move_direction.value, now)
                 logger.info(
                     "ptz_move_action",
@@ -264,6 +293,8 @@ class TrackingService:
                 result = self._ptz.pulse(decision.zoom_direction, decision.zoom_pulse_ms)
                 self._metrics.ptz_commands.inc()
                 self._zoom_cooldown.mark(now)
+                self._last_ptz_action = decision.zoom_direction.value
+                self._last_skip_reason = None
                 self._save_action_screenshot(frame, decision.zoom_direction.value, now)
                 logger.info(
                     "ptz_zoom_action",
@@ -304,14 +335,29 @@ class TrackingService:
         source_fps: float,
     ) -> None:
         status_map = {TrackStatus.SEARCHING: 0, TrackStatus.TRACKING: 1, TrackStatus.LOST: 2}
+        phase_map = {
+            TrackingPhase.IDLE: 0,
+            TrackingPhase.SEARCHING: 1,
+            TrackingPhase.ACQUIRING: 2,
+            TrackingPhase.TRACKING: 3,
+            TrackingPhase.LOST: 4,
+            TrackingPhase.RETURNING_HOME: 5,
+            TrackingPhase.ERROR: 6,
+        }
         self._metrics.tracking_status.set(status_map[target_state.status])
+        self._metrics.tracking_phase.set(phase_map[self._tracking_phase])
         snapshot = TrackingSnapshot(
             frame_index=frame_index,
             timestamp=timestamp,
+            tracking_phase=self._tracking_phase,
             detections=detections,
             target=target_state,
             decision=decision,
             inference_latency_ms=latency_ms,
+            current_ptz_action=self._last_ptz_action,
+            last_skip_reason=self._last_skip_reason,
+            return_home_enabled=bool(self._config.camera.home_preset_name),
+            return_home_issued=self._return_home_issued,
             extras={
                 "fps": source_fps,
                 "loss_started_at": self._loss_started_at,
@@ -354,7 +400,22 @@ class TrackingService:
         self._api_thread = threading.Thread(target=self._api_server.run, daemon=True, name="api-server")
         self._api_thread.start()
 
-    def _log_state_transition(self, previous: TargetState, current: TargetState, now: float) -> None:
+    def _log_state_transition(
+        self,
+        previous: TargetState,
+        current: TargetState,
+        now: float,
+        previous_phase: TrackingPhase,
+    ) -> None:
+        if previous_phase != self._tracking_phase:
+            logger.info(
+                "tracking_phase_transition",
+                previous_phase=previous_phase.value,
+                phase=self._tracking_phase.value,
+                track_id=current.track_id,
+                reason=current.selection_reason,
+                lost_duration_seconds=current.lost_duration_seconds,
+            )
         if previous.track_id != current.track_id and current.status == TrackStatus.TRACKING:
             logger.info(
                 "tracking_target_switch",
@@ -368,6 +429,8 @@ class TrackingService:
                 "tracking_status_transition",
                 previous_status=previous.status.value,
                 status=current.status.value,
+                previous_phase=previous_phase.value,
+                phase=self._tracking_phase.value,
                 track_id=current.track_id,
                 reason=current.selection_reason,
                 lost_duration_seconds=current.lost_duration_seconds,
@@ -403,5 +466,19 @@ class TrackingService:
         )
 
     def _log_local_skip(self, reason: str, target_state: TargetState, now: float) -> None:
+        self._last_skip_reason = reason
         if self._skip_log_debouncer.allow(reason, now):
             logger.info("ptz_action_skipped", reason=reason, status=target_state.status.value)
+
+    def _determine_phase(self, target_state: TargetState) -> TrackingPhase:
+        if self._tracking_phase == TrackingPhase.ERROR:
+            return TrackingPhase.ERROR
+        if self._return_home_issued:
+            return TrackingPhase.RETURNING_HOME
+        if target_state.status == TrackStatus.TRACKING:
+            return TrackingPhase.TRACKING
+        if target_state.visible and not target_state.stable:
+            return TrackingPhase.ACQUIRING
+        if target_state.status == TrackStatus.LOST:
+            return TrackingPhase.LOST
+        return TrackingPhase.SEARCHING

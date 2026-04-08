@@ -1,5 +1,5 @@
 from app.config import TrackingSection
-from app.models.runtime import TargetState, TrackStatus
+from app.models.runtime import TargetState, TrackStatus, TrackingPhase, compatibility_status_for_phase
 from app.tracking.models import SelectionResult, TrackCandidate
 from app.tracking.state_machine import TrackingStateMachine
 
@@ -44,3 +44,9 @@ def test_state_machine_enters_lost_then_searching_after_timeout() -> None:
 
     assert lost.status == TrackStatus.LOST
     assert searching.status == TrackStatus.SEARCHING
+
+
+def test_phase_compatibility_mapping() -> None:
+    assert compatibility_status_for_phase(TrackingPhase.ACQUIRING) == TrackStatus.SEARCHING
+    assert compatibility_status_for_phase(TrackingPhase.TRACKING) == TrackStatus.TRACKING
+    assert compatibility_status_for_phase(TrackingPhase.RETURNING_HOME) == TrackStatus.LOST

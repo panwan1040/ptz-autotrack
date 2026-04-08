@@ -118,6 +118,8 @@ When enabled:
 - `GET /metrics`
 - `POST /ptz/test/{direction}` where direction is one of `Left`, `Right`, `Up`, `Down`, `LeftUp`, `RightUp`, `LeftDown`, `RightDown`, `ZoomTele`, `ZoomWide`
 
+`GET /state` includes both compatibility status and explicit runtime phase, plus return-home flags and the last skipped PTZ reason.
+
 ## PTZ Behavior
 
 The control loop uses pulse-based PTZ actions instead of continuous motion:
@@ -146,6 +148,7 @@ Selection and switching behavior:
 - The current target stays locked unless a competing confirmed target beats it by `tracking.switch_margin_ratio`
 - Short target loss enters `LOST`, then falls back to `SEARCHING` after `tracking.lost_timeout_seconds`
 - The API state now exposes whether the target is stable, visible, and why a selection/state transition happened
+- Runtime phase is richer than compatibility status: `searching`, `acquiring`, `tracking`, `lost`, `returning_home`, and `error`
 
 Lost-target behavior:
 

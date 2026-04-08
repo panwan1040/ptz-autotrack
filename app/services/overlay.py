@@ -25,6 +25,7 @@ def draw_overlay(
     if snapshot.target.bbox_xyxy is not None:
         _draw_detection(output, snapshot.target_to_detection(), (0, 0, 255))
     text_lines = [
+        f"phase={snapshot.tracking_phase.value}",
         f"status={snapshot.target.status.value}",
         f"target_id={snapshot.target.track_id}",
         f"stable={snapshot.target.stable}",

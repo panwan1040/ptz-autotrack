@@ -48,6 +48,7 @@ def create_app(
         if snapshot is None:
             raise HTTPException(status_code=503, detail="No snapshot yet")
         data = asdict(snapshot)
+        data["tracking_phase"] = snapshot.tracking_phase.value
         data["target"]["status"] = snapshot.target.status.value
         if snapshot.decision.move_direction:
             data["decision"]["move_direction"] = snapshot.decision.move_direction.value

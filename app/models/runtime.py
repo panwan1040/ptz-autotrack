@@ -13,6 +13,16 @@ class TrackStatus(str, Enum):
     LOST = "lost"
 
 
+class TrackingPhase(str, Enum):
+    IDLE = "idle"
+    SEARCHING = "searching"
+    ACQUIRING = "acquiring"
+    TRACKING = "tracking"
+    LOST = "lost"
+    RETURNING_HOME = "returning_home"
+    ERROR = "error"
+
+
 class PtzDirection(str, Enum):
     LEFT = "Left"
     RIGHT = "Right"
@@ -58,6 +68,14 @@ class TargetState:
     lost_duration_seconds: float = 0.0
 
 
+def compatibility_status_for_phase(phase: TrackingPhase) -> TrackStatus:
+    if phase == TrackingPhase.TRACKING:
+        return TrackStatus.TRACKING
+    if phase in {TrackingPhase.LOST, TrackingPhase.RETURNING_HOME}:
+        return TrackStatus.LOST
+    return TrackStatus.SEARCHING
+
+
 @dataclass(slots=True)
 class ControlDecision:
     move_direction: PtzDirection | None = None
@@ -74,10 +92,15 @@ class ControlDecision:
 class TrackingSnapshot:
     frame_index: int
     timestamp: float
+    tracking_phase: TrackingPhase = TrackingPhase.SEARCHING
     detections: list[Detection] = field(default_factory=list)
     target: TargetState = field(default_factory=lambda: TargetState(track_id=None, bbox_xyxy=None))
     decision: ControlDecision = field(default_factory=ControlDecision)
     inference_latency_ms: float = 0.0
+    current_ptz_action: str | None = None
+    last_skip_reason: str | None = None
+    return_home_enabled: bool = False
+    return_home_issued: bool = False
     extras: dict[str, Any] = field(default_factory=dict)
 
     def target_to_detection(self) -> Detection:

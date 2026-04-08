@@ -15,7 +15,7 @@ from app.config import (
     VideoSection,
 )
 from app.control.ptz_client import PtzCommandResult
-from app.models.runtime import TargetState, TrackStatus
+from app.models.runtime import TargetState, TrackStatus, TrackingPhase
 from app.services.tracking_service import TrackingService
 
 
@@ -124,3 +124,25 @@ def test_return_home_after_prolonged_loss() -> None:
     service._handle_tracking_state(np.zeros((10, 10, 3), dtype=np.uint8), previous, current, 3.5)
 
     assert ptz.home_moves == 1
+    assert service._tracking_phase == TrackingPhase.RETURNING_HOME
+
+
+def test_acquiring_phase_for_visible_unstable_target() -> None:
+    service, _ptz = make_service(ControlSection())
+    current = TargetState(
+        track_id=8,
+        bbox_xyxy=(100, 100, 200, 300),
+        status=TrackStatus.SEARCHING,
+        stable=False,
+        visible=True,
+    )
+
+    service._handle_tracking_state(
+        np.zeros((10, 10, 3), dtype=np.uint8),
+        TargetState(track_id=None, bbox_xyxy=None),
+        current,
+        1.0,
+    )
+
+    assert service._tracking_phase == TrackingPhase.ACQUIRING
+    assert current.status == TrackStatus.SEARCHING
