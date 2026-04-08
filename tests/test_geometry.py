@@ -1,4 +1,4 @@
-from app.utils.geometry import bbox_center, height_ratio, inside_dead_zone
+from app.utils.geometry import bbox_center, bbox_iou, height_ratio, inside_dead_zone
 
 
 def test_bbox_center() -> None:
@@ -12,3 +12,7 @@ def test_inside_dead_zone() -> None:
 
 def test_height_ratio() -> None:
     assert height_ratio((0, 0, 50, 100), 200) == 0.5
+
+
+def test_bbox_iou() -> None:
+    assert bbox_iou((0, 0, 10, 10), (5, 5, 15, 15)) == 25 / 175

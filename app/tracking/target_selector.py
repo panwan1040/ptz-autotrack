@@ -3,108 +3,166 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.config import TrackingSection
-from app.models.runtime import Detection, TargetState, TrackStatus
-from app.utils.geometry import bbox_area, center_distance_normalized, normalized_bbox_center
+from app.models.runtime import TargetState, TrackStatus
+from app.tracking.models import SelectionResult, TrackCandidate
+from app.utils.geometry import bbox_area, normalized_bbox_center
 
 
 @dataclass(slots=True)
 class TargetSelector:
+    """Scores visible tracks and applies sticky switching policy."""
+
     config: TrackingSection
 
     def select(
         self,
-        detections: list[Detection],
+        candidates: list[TrackCandidate],
         previous: TargetState,
         frame_width: int,
         frame_height: int,
-        now: float,
-    ) -> TargetState:
-        if not detections:
-            return self._lost(previous, now)
+    ) -> SelectionResult:
+        if not candidates:
+            return SelectionResult(candidate=None, reason="no_visible_candidates")
 
-        if previous.bbox_xyxy is not None and previous.track_id is not None:
-            sticky = self._stick_to_previous(detections, previous, frame_width, frame_height)
-            if sticky is not None:
-                return TargetState(
-                    track_id=sticky.tracker_id,
-                    bbox_xyxy=sticky.bbox_xyxy,
-                    confidence=sticky.confidence,
-                    persist_frames=previous.persist_frames + 1,
-                    last_seen_ts=now,
-                    status=TrackStatus.TRACKING,
+        scored = {
+            candidate.track_id: self._score_candidate(candidate, previous, frame_width, frame_height)
+            for candidate in candidates
+        }
+        previous_candidate = next((candidate for candidate in candidates if candidate.track_id == previous.track_id), None)
+
+        best_candidate = max(candidates, key=lambda candidate: scored[candidate.track_id])
+        best_score = scored[best_candidate.track_id]
+
+        if previous_candidate is None:
+            confirmed_best = self._best_confirmed(candidates, scored)
+            if confirmed_best is not None:
+                return SelectionResult(
+                    candidate=confirmed_best,
+                    reason="select_confirmed_candidate",
+                    score=scored[confirmed_best.track_id],
                 )
+            return SelectionResult(candidate=best_candidate, reason="candidate_warming_up", score=best_score)
 
-        chosen = self._choose_by_strategy(detections, frame_width, frame_height)
-        return TargetState(
-            track_id=chosen.tracker_id,
-            bbox_xyxy=chosen.bbox_xyxy,
-            confidence=chosen.confidence,
-            persist_frames=1,
-            last_seen_ts=now,
-            status=TrackStatus.TRACKING,
+        previous_score = scored[previous_candidate.track_id]
+        if previous.status == TrackStatus.TRACKING:
+            challenger = self._best_switch_candidate(candidates, scored, previous_candidate, previous_score)
+            if challenger is not None:
+                return SelectionResult(
+                    candidate=challenger,
+                    reason="switch_margin_exceeded",
+                    score=scored[challenger.track_id],
+                    previous_score=previous_score,
+                    switched=True,
+                )
+            return SelectionResult(
+                candidate=previous_candidate,
+                reason="stick_with_current_target",
+                score=previous_score,
+                previous_score=previous_score,
+            )
+
+        if previous_candidate.confirmed:
+            return SelectionResult(
+                candidate=previous_candidate,
+                reason="reacquired_previous_target",
+                score=previous_score,
+                previous_score=previous_score,
+            )
+
+        confirmed_best = self._best_confirmed(candidates, scored)
+        if confirmed_best is not None:
+            return SelectionResult(
+                candidate=confirmed_best,
+                reason="select_confirmed_candidate",
+                score=scored[confirmed_best.track_id],
+                previous_score=previous_score,
+                switched=confirmed_best.track_id != previous_candidate.track_id,
+            )
+
+        return SelectionResult(
+            candidate=best_candidate,
+            reason="candidate_warming_up",
+            score=best_score,
+            previous_score=previous_score,
+            switched=best_candidate.track_id != previous_candidate.track_id,
         )
 
-    def _lost(self, previous: TargetState, now: float) -> TargetState:
-        if previous.track_id is None:
-            return TargetState(track_id=None, bbox_xyxy=None, last_seen_ts=now, status=TrackStatus.SEARCHING)
-        status = (
-            TrackStatus.LOST
-            if (now - previous.last_seen_ts) <= self.config.lost_timeout_seconds
-            else TrackStatus.SEARCHING
-        )
-        return TargetState(
-            track_id=previous.track_id,
-            bbox_xyxy=previous.bbox_xyxy,
-            confidence=0.0,
-            persist_frames=previous.persist_frames,
-            last_seen_ts=previous.last_seen_ts,
-            status=status,
-        )
-
-    def _stick_to_previous(
+    def _best_confirmed(
         self,
-        detections: list[Detection],
+        candidates: list[TrackCandidate],
+        scored: dict[int, float],
+    ) -> TrackCandidate | None:
+        confirmed = [candidate for candidate in candidates if candidate.confirmed]
+        if not confirmed:
+            return None
+        return max(confirmed, key=lambda candidate: scored[candidate.track_id])
+
+    def _best_switch_candidate(
+        self,
+        candidates: list[TrackCandidate],
+        scored: dict[int, float],
+        previous_candidate: TrackCandidate,
+        previous_score: float,
+    ) -> TrackCandidate | None:
+        margin_target = previous_score * (1.0 + self.config.switch_margin_ratio)
+        challengers = [
+            candidate
+            for candidate in candidates
+            if candidate.track_id != previous_candidate.track_id
+            and candidate.confirmed
+            and scored[candidate.track_id] >= margin_target
+        ]
+        if not challengers:
+            return None
+        return max(challengers, key=lambda candidate: scored[candidate.track_id])
+
+    def _score_candidate(
+        self,
+        candidate: TrackCandidate,
         previous: TargetState,
         frame_width: int,
         frame_height: int,
-    ) -> Detection | None:
-        assert previous.bbox_xyxy is not None
-        best: tuple[float, Detection] | None = None
-        for detection in detections:
-            distance = center_distance_normalized(
-                detection.bbox_xyxy,
-                previous.bbox_xyxy,
-                frame_width,
-                frame_height,
-            )
-            if distance > self.config.max_association_distance:
-                continue
-            score = distance - (detection.confidence * 0.05)
-            if best is None or score < best[0]:
-                best = (score, detection)
-        return best[1] if best else None
-
-    def _choose_by_strategy(
-        self,
-        detections: list[Detection],
-        frame_width: int,
-        frame_height: int,
-    ) -> Detection:
+    ) -> float:
+        nx, ny = normalized_bbox_center(candidate.bbox_xyxy, frame_width, frame_height)
+        center_score = max(0.0, 1.0 - (abs(nx - 0.5) + abs(ny - 0.5)))
+        frame_area = max(1.0, float(frame_width * frame_height))
+        size_score = min(1.0, bbox_area(candidate.bbox_xyxy) / (frame_area * 0.18))
+        stability_score = min(1.0, candidate.total_visible_frames / max(1, self.config.min_persist_frames))
+        continuity_bonus = 0.18 if candidate.track_id == previous.track_id else 0.0
+        recently_seen_bonus = 0.04 if candidate.missed_frames == 0 else 0.0
         strategy = self.config.strategy
         if strategy == "largest":
-            return max(detections, key=lambda det: bbox_area(det.bbox_xyxy))
-        if strategy == "highest_confidence":
-            return max(detections, key=lambda det: det.confidence)
-        if strategy == "most_centered":
-            return min(
-                detections,
-                key=lambda det: self._center_penalty(det, frame_width, frame_height),
+            return (
+                (0.48 * size_score)
+                + (0.20 * center_score)
+                + (0.14 * candidate.confidence)
+                + (0.18 * stability_score)
+                + continuity_bonus
+                + recently_seen_bonus
             )
-        return min(
-            detections,
-            key=lambda det: self._center_penalty(det, frame_width, frame_height) - det.confidence * 0.02,
+        if strategy == "highest_confidence":
+            return (
+                (0.48 * candidate.confidence)
+                + (0.20 * center_score)
+                + (0.14 * size_score)
+                + (0.18 * stability_score)
+                + continuity_bonus
+                + recently_seen_bonus
+            )
+        if strategy == "most_centered":
+            return (
+                (0.48 * center_score)
+                + (0.20 * candidate.confidence)
+                + (0.14 * size_score)
+                + (0.18 * stability_score)
+                + continuity_bonus
+                + recently_seen_bonus
+            )
+        return (
+            (0.38 * candidate.confidence)
+            + (0.28 * center_score)
+            + (0.14 * size_score)
+            + (0.20 * stability_score)
+            + continuity_bonus
+            + recently_seen_bonus
         )
-
-    def _center_penalty(self, detection: Detection, frame_width: int, frame_height: int) -> float:
-        nx, ny = normalized_bbox_center(detection.bbox_xyxy, frame_width, frame_height)
-        return abs(nx - 0.5) + abs(ny - 0.5)

@@ -6,9 +6,9 @@ Production-oriented Python project for real-time person auto-tracking with a Dah
 
 - RTSP ingest with reconnect and low-latency frame dropping
 - YOLOv8 person detection
-- Single-target tracking with stickiness and reacquisition policy
-- Dahua PTZ CGI pulse control with dry-run mode
-- Dead-zone-based pan/tilt correction and guarded auto-zoom
+- Internal multi-frame tracking backend with stable IDs, short-loss reactivation, and sticky target selection
+- Dahua PTZ CGI pulse control with dry-run mode, contradictory-command suppression, and home/preset helpers
+- Dead-zone-based pan/tilt correction with adaptive pulses and guarded auto-zoom
 - Structured logging, Prometheus metrics, FastAPI health/debug API
 - Optional overlay, snapshots, PTZ action screenshots
 - CLI commands for run, detect-only, PTZ tests, config print
@@ -122,12 +122,12 @@ When enabled:
 
 The control loop uses pulse-based PTZ actions instead of continuous motion:
 
-- Small error -> short pulse
-- Large error -> longer pulse
-- Diagonal correction when both axes exceed thresholds
-- Dead zone prevents jitter around frame center
-- Zoom has hysteresis and cooldown to reduce oscillation
+- Small error -> shorter pulse, larger error -> longer pulse
+- Diagonal movement is preserved, but dominant-axis correction wins when one axis is clearly stronger
+- Duplicate same-direction starts are suppressed and active motion is stopped before direction changes
+- Zoom-in is blocked when the target is still far from center unless explicitly allowed
 - Shutdown always sends emergency stop attempts
+- `digest_or_basic` auth can fall back to basic auth on 401 responses
 
 ## Tracking Policy
 
@@ -138,7 +138,20 @@ Supported target selection strategies:
 - `highest_confidence`
 - `stick_nearest`
 
-The system tracks only one primary target. It prefers sticking to the current target when association remains plausible.
+The system still tracks one primary target, but the tracking layer is now a real internal track manager rather than per-frame ID assignment. Matching uses IoU, center distance, and size consistency so IDs survive mild motion, short occlusions, and modest zoom changes.
+
+Selection and switching behavior:
+
+- New tracks must persist for `tracking.min_persist_frames` before they are considered stable targets
+- The current target stays locked unless a competing confirmed target beats it by `tracking.switch_margin_ratio`
+- Short target loss enters `LOST`, then falls back to `SEARCHING` after `tracking.lost_timeout_seconds`
+- The API state now exposes whether the target is stable, visible, and why a selection/state transition happened
+
+Lost-target behavior:
+
+- `control.lost_behavior=hold`: stop issuing tracking motion and wait for reacquisition
+- `control.lost_behavior=zoom_out`: pulse zoom-out on cooldown to widen the scene for reacquisition
+- `control.lost_behavior=return_home`: optionally zoom out while lost, then return to the configured home preset after `control.return_home_timeout_seconds`
 
 ## Dry-Run and Detect-Only
 
@@ -191,6 +204,7 @@ If tracking jitters:
 
 - increase `dead_zone_x` / `dead_zone_y`
 - raise `startup_stable_frames`
+- raise `tracking.min_persist_frames` to make new targets prove themselves longer
 - increase `movement_cooldown_seconds`
 - reduce `ema_alpha`
 
@@ -199,11 +213,12 @@ If zoom oscillates:
 - widen zoom min/max bands
 - increase `zoom.hysteresis`
 - increase `zoom_cooldown_seconds`
+- keep `allow_zoom_during_pan_tilt=false` unless your PTZ hardware is especially smooth
 
 ## Future Extension Points
 
 - Replace Dahua PTZ client with ONVIF implementation behind the same command surface
-- Swap tracker implementation with ByteTrack or BoT-SORT while keeping `Tracker` interface stable
+- Swap the internal tracker backend with ByteTrack or BoT-SORT while keeping `Tracker` interface stable
 - Add schedule-aware tracking hours or zone-triggered engagement
 
 ## Troubleshooting
@@ -221,9 +236,14 @@ If zoom oscillates:
 ### Wrong target selected
 - Switch tracking strategy
 - Increase confidence threshold
-- Tune association distance and switch margin
+- Tune association distance, `min_persist_frames`, and switch margin
 
 ### HTTP PTZ fails
 - Check Dahua CGI auth mode
 - Confirm camera user has PTZ privilege
 - Start with `APP_DRY_RUN_PTZ=true`, then test `test-ptz-left`
+
+## Current Limitations
+
+- The default backend is still an in-repo tracker, not ByteTrack/BoT-SORT. It is much stronger than naive reassociation, but long full occlusions and severe camera jumps can still break identity continuity.
+- Home-preset behavior depends on the Dahua model supporting the configured preset name. The PTZ client keeps this isolated so an ONVIF backend can be dropped in later without changing the service/control layers.

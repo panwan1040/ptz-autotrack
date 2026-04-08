@@ -27,8 +27,10 @@ def draw_overlay(
     text_lines = [
         f"status={snapshot.target.status.value}",
         f"target_id={snapshot.target.track_id}",
+        f"stable={snapshot.target.stable}",
         f"ptz={snapshot.decision.move_direction.value if snapshot.decision.move_direction else 'idle'}",
         f"zoom={snapshot.decision.zoom_direction.value if snapshot.decision.zoom_direction else 'idle'}",
+        f"reason={snapshot.target.selection_reason}",
         f"fps={snapshot.extras.get('fps', 0):.1f}",
     ]
     for idx, line in enumerate(text_lines):

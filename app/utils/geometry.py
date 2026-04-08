@@ -25,6 +25,30 @@ def bbox_area(bbox: BBox) -> float:
     return bbox_width(bbox) * bbox_height(bbox)
 
 
+def bbox_iou(a: BBox, b: BBox) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+    if inter_area <= 0:
+        return 0.0
+    union = bbox_area(a) + bbox_area(b) - inter_area
+    return inter_area / union if union > 0 else 0.0
+
+
+def bbox_size_similarity(a: BBox, b: BBox) -> float:
+    area_a = bbox_area(a)
+    area_b = bbox_area(b)
+    if area_a <= 0 or area_b <= 0:
+        return 0.0
+    return min(area_a, area_b) / max(area_a, area_b)
+
+
 def normalize_point(x: float, y: float, frame_width: float, frame_height: float) -> tuple[float, float]:
     return (x / frame_width, y / frame_height)
 

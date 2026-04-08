@@ -51,6 +51,11 @@ class TargetState:
     persist_frames: int = 0
     last_seen_ts: float = 0.0
     status: TrackStatus = TrackStatus.SEARCHING
+    stable: bool = False
+    visible: bool = False
+    selection_reason: str = "idle"
+    candidate_score: float = 0.0
+    lost_duration_seconds: float = 0.0
 
 
 @dataclass(slots=True)

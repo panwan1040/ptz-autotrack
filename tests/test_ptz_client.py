@@ -16,14 +16,26 @@ def test_dry_run_pulse() -> None:
     result = client.pulse(PtzDirection.LEFT, 100)
     assert result.success is True
     assert result.dry_run is True
+    assert result.action == "pulse"
 
 
 def test_http_call_on_real_mode() -> None:
     session = Mock()
     response = Mock()
     response.raise_for_status.return_value = None
+    response.status_code = 200
     session.get.return_value = response
     client = DahuaPtzClient(make_camera(), PtzSection(dry_run=False), session=session)
     result = client.start(PtzDirection.LEFT)
     assert result.success is True
     session.get.assert_called()
+
+
+def test_duplicate_start_is_suppressed_when_same_direction_is_active() -> None:
+    client = DahuaPtzClient(make_camera(), PtzSection(dry_run=True, debounce_seconds=10.0))
+    first = client.start(PtzDirection.LEFT)
+    second = client.start(PtzDirection.LEFT)
+    assert first.success is True
+    assert second.success is True
+    assert second.issued is False
+    assert second.detail == "duplicate_start_suppressed"
