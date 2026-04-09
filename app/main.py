@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import uvicorn
+from fastapi import FastAPI
+
+from app.api.server import create_app
 from app.camera.rtsp_reader import RtspReader
 from app.config import load_config
 from app.detection.yolo_detector import YoloDetector
@@ -27,9 +31,38 @@ def build_service(detect_only_override: bool | None = None) -> TrackingService:
     return TrackingService(config, reader, detector, tracker, ptz_client)
 
 
+def build_app(detect_only_override: bool | None = None) -> tuple[FastAPI, TrackingService]:
+    service = build_service(detect_only_override=detect_only_override)
+    app = create_app(
+        service.config,
+        service.metrics,
+        service.state_store,
+        ptz_test_callback=service.ptz_test,
+        tracking_service=service,
+    )
+    return app, service
+
+
 def run() -> None:
     service = build_service()
-    service.start()
+    if service.config.app.api.enabled:
+        # Keep Uvicorn in the main thread and attach the tracker through the
+        # FastAPI lifespan hooks rather than running a server in a worker thread.
+        app = create_app(
+            service.config,
+            service.metrics,
+            service.state_store,
+            ptz_test_callback=service.ptz_test,
+            tracking_service=service,
+        )
+        uvicorn.run(
+            app,
+            host=service.config.app.api.host,
+            port=service.config.app.api.port,
+            log_level="warning",
+        )
+        return
+    service.run_foreground()
 
 
 if __name__ == "__main__":

@@ -47,3 +47,21 @@ def test_state_endpoint_exposes_tracking_phase_and_return_home_flags() -> None:
     assert data["return_home_enabled"] is True
     assert data["return_home_issued"] is True
     assert data["current_ptz_action"] == "return_home"
+
+
+def test_lifespan_starts_and_stops_tracking_service() -> None:
+    calls: list[str] = []
+
+    class DummyService:
+        def start(self) -> None:
+            calls.append("start")
+
+        def stop(self) -> None:
+            calls.append("stop")
+
+    app = create_app(make_config(), MetricsRegistry(), StateStore(), tracking_service=DummyService())
+
+    with TestClient(app):
+        assert calls == ["start"]
+
+    assert calls == ["start", "stop"]

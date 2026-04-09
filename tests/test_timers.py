@@ -1,4 +1,4 @@
-from app.utils.timers import CooldownTimer, RateLimiter
+from app.utils.timers import CooldownTimer, LoopRegulator, RateLimiter
 
 
 def test_cooldown() -> None:
@@ -14,3 +14,14 @@ def test_rate_limiter() -> None:
     assert limiter.allow(1.0) is True
     assert limiter.allow(1.1) is False
     assert limiter.allow(1.6) is True
+
+
+def test_loop_regulator_remaining_sleep() -> None:
+    regulator = LoopRegulator(5.0)
+    assert regulator.target_period_seconds == 0.2
+    assert regulator.remaining_sleep(0.05) == 0.15
+
+
+def test_loop_regulator_no_double_sleep_on_overrun() -> None:
+    regulator = LoopRegulator(5.0)
+    assert regulator.remaining_sleep(0.25) == 0.0

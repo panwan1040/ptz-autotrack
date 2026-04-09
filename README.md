@@ -119,6 +119,7 @@ When enabled:
 - `POST /ptz/test/{direction}` where direction is one of `Left`, `Right`, `Up`, `Down`, `LeftUp`, `RightUp`, `LeftDown`, `RightDown`, `ZoomTele`, `ZoomWide`
 
 `GET /state` includes both compatibility status and explicit runtime phase, plus return-home flags and the last skipped PTZ reason.
+When the API is enabled, Uvicorn stays in the main process/main thread and the tracking worker is started and stopped through FastAPI lifespan.
 
 ## PTZ Behavior
 
@@ -130,6 +131,7 @@ The control loop uses pulse-based PTZ actions instead of continuous motion:
 - Zoom-in is blocked when the target is still far from center unless explicitly allowed
 - Shutdown always sends emergency stop attempts
 - `digest_or_basic` auth can fall back to basic auth on 401 responses
+- The control loop uses fixed-rate scheduling, so PTZ pulse time does not add a second unconditional sleep at the end of a tick
 
 ## Tracking Policy
 
@@ -250,3 +252,4 @@ If zoom oscillates:
 
 - The default backend is still an in-repo tracker, not ByteTrack/BoT-SORT. It is much stronger than naive reassociation, but long full occlusions and severe camera jumps can still break identity continuity.
 - Home-preset behavior depends on the Dahua model supporting the configured preset name. The PTZ client keeps this isolated so an ONVIF backend can be dropped in later without changing the service/control layers.
+- PTZ pulse execution is still synchronous by design for safety, so one large pulse can consume most of a control tick, but the scheduler no longer adds a second unconditional sleep afterward.

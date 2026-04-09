@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import uvicorn
 
 from app.config import load_config
 from app.control.ptz_client import DahuaPtzClient
 from app.logging_config import configure_logging
-from app.main import build_service
+from app.main import build_app
 from app.models.runtime import PtzDirection
 
 
@@ -22,10 +23,28 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "run":
-        build_service().start()
+        app, service = build_app()
+        if service.config.app.api.enabled:
+            uvicorn.run(
+                app,
+                host=service.config.app.api.host,
+                port=service.config.app.api.port,
+                log_level="warning",
+            )
+        else:
+            service.run_foreground()
         return
     if args.command == "detect-only":
-        build_service(detect_only_override=True).start()
+        app, service = build_app(detect_only_override=True)
+        if service.config.app.api.enabled:
+            uvicorn.run(
+                app,
+                host=service.config.app.api.host,
+                port=service.config.app.api.port,
+                log_level="warning",
+            )
+        else:
+            service.run_foreground()
         return
 
     config = load_config()

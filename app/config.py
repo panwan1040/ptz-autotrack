@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import yaml
 from pydantic import BaseModel, Field, SecretStr, computed_field, model_validator
@@ -212,12 +213,33 @@ class EnvSettings(BaseSettings):
 def mask_secret_in_url(url: str) -> str:
     if "@" not in url or "://" not in url:
         return url
-    scheme, remainder = url.split("://", 1)
-    credentials, host = remainder.split("@", 1)
-    if ":" not in credentials:
-        return f"{scheme}://***@{host}"
-    username, _password = credentials.split(":", 1)
-    return f"{scheme}://{username}:***@{host}"
+    try:
+        parsed = urlsplit(url)
+        if not parsed.netloc or (parsed.username is None and parsed.password is None):
+            return url
+        masked_credentials = "***" if parsed.username is None else f"{parsed.username}:***"
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = f"{masked_credentials}@{host}"
+        if parsed.port is not None:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit(
+            SplitResult(
+                scheme=parsed.scheme,
+                netloc=netloc,
+                path=parsed.path,
+                query=parsed.query,
+                fragment=parsed.fragment,
+            )
+        )
+    except ValueError:
+        scheme, remainder = url.split("://", 1)
+        credentials, host = remainder.rsplit("@", 1)
+        if ":" not in credentials:
+            return f"{scheme}://***@{host}"
+        username, _password = credentials.split(":", 1)
+        return f"{scheme}://{username}:***@{host}"
 
 
 def deep_update(base: dict[str, object], updates: dict[str, object]) -> dict[str, object]:

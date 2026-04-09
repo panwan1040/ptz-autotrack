@@ -6,9 +6,8 @@ import time
 
 import cv2
 import numpy as np
-import uvicorn
 
-from app.api.server import StateStore, create_app
+from app.api.server import StateStore
 from app.camera.rtsp_reader import RtspReader
 from app.config import AppConfig
 from app.control.control_logic import ControlLogic
@@ -32,7 +31,7 @@ from app.services.overlay import draw_overlay
 from app.services.snapshot_manager import SnapshotManager
 from app.tracking.tracker import Tracker
 from app.utils.throttling import Debouncer
-from app.utils.timers import CooldownTimer, RateLimiter
+from app.utils.timers import CooldownTimer, LoopRegulator, RateLimiter
 
 logger = get_logger(__name__)
 
@@ -63,10 +62,10 @@ class TrackingService:
         self._zoom_cooldown = CooldownTimer(config.control.zoom_cooldown_seconds)
         self._lost_zoom_cooldown = CooldownTimer(config.control.lost_zoom_out_cooldown_seconds)
         self._rate_limiter = RateLimiter(config.control.max_command_rate_hz)
+        self._loop_regulator = LoopRegulator(config.control.tick_hz)
         self._skip_log_debouncer = Debouncer(1.0)
         self._startup_frames = 0
-        self._api_server: uvicorn.Server | None = None
-        self._api_thread: threading.Thread | None = None
+        self._worker_thread: threading.Thread | None = None
         self._snapshot_manager = SnapshotManager(config.app.snapshot_dir, config.snapshots.max_files)
         self._screenshot_manager = SnapshotManager(config.app.screenshot_dir, config.snapshots.max_files)
         self._last_snapshot_ts = 0.0
@@ -76,53 +75,64 @@ class TrackingService:
         self._tracking_phase = TrackingPhase.IDLE
         self._last_ptz_action: str | None = None
         self._last_skip_reason: str | None = None
+        self._runtime_started = False
 
     @property
     def state_store(self) -> StateStore:
         return self._state_store
 
+    @property
+    def metrics(self) -> MetricsRegistry:
+        return self._metrics
+
+    @property
+    def config(self) -> AppConfig:
+        return self._config
+
     def install_signal_handlers(self) -> None:
         def _handler(_signum: int, _frame: object | None) -> None:
-            self.stop()
+            self.request_stop()
 
         signal.signal(signal.SIGINT, _handler)
         signal.signal(signal.SIGTERM, _handler)
 
     def start(self) -> None:
+        if self._worker_thread and self._worker_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._startup_runtime()
+        self._worker_thread = threading.Thread(target=self._run_worker, name="tracking-service", daemon=True)
+        self._worker_thread.start()
+
+    def run_foreground(self) -> None:
         self.install_signal_handlers()
-        self._start_api()
-        self._tracking_phase = TrackingPhase.SEARCHING
-        self._reader.start()
-        startup = self._ptz.startup_preset()
-        logger.info(
-            "startup_preset_result",
-            success=startup.success,
-            dry_run=startup.dry_run,
-            detail=startup.detail,
-        )
-        self.run_loop()
+        self._stop_event.clear()
+        self._startup_runtime()
+        try:
+            self.run_loop()
+        finally:
+            self._shutdown_runtime()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
 
     def stop(self) -> None:
-        if self._stop_event.is_set():
-            return
         self._stop_event.set()
-        self._tracking_phase = TrackingPhase.IDLE
-        logger.info("tracking_service_stopping")
-        self._reader.stop()
-        self._ptz.emergency_stop()
-        if self._api_server is not None:
-            self._api_server.should_exit = True
-        if self._api_thread is not None:
-            self._api_thread.join(timeout=3.0)
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            if threading.current_thread() is not self._worker_thread:
+                self._worker_thread.join(timeout=3.0)
+        self._shutdown_runtime()
 
     def run_loop(self) -> None:
         logger.info("tracking_service_started")
         self._tracking_phase = TrackingPhase.SEARCHING
-        sleep_seconds = 1.0 / max(1.0, self._config.control.tick_hz)
+        read_timeout = min(1.0, max(0.05, self._loop_regulator.target_period_seconds or 0.05))
         try:
             while not self._stop_event.is_set():
-                packet = self._reader.read(timeout=1.0)
+                loop_started_at = time.monotonic()
+                packet = self._reader.read(timeout=read_timeout)
                 if packet is None:
+                    self._sleep_for_tick(loop_started_at)
                     continue
 
                 self._metrics.frames_received.inc()
@@ -173,14 +183,12 @@ class TrackingService:
                     packet.source_fps,
                 )
                 self._previous_target = self._copy_target_state(target_state)
-                time.sleep(sleep_seconds)
+                self._sleep_for_tick(loop_started_at)
         except Exception as exc:
             self._tracking_phase = TrackingPhase.ERROR
             logger.exception("tracking_service_exception", error=str(exc))
             self._ptz.emergency_stop()
             raise
-        finally:
-            self.stop()
 
     def _handle_tracking_state(
         self,
@@ -381,25 +389,6 @@ class TrackingService:
         if self._config.app.save_action_screenshots:
             self._screenshot_manager.save(frame, f"action-{action}", now)
 
-    def _start_api(self) -> None:
-        if not self._config.app.api.enabled:
-            return
-        app = create_app(
-            self._config,
-            self._metrics,
-            self._state_store,
-            ptz_test_callback=lambda direction: self._ptz.pulse(direction, self._config.control.pan_pulse_ms_small),
-        )
-        uvicorn_config = uvicorn.Config(
-            app,
-            host=self._config.app.api.host,
-            port=self._config.app.api.port,
-            log_level="warning",
-        )
-        self._api_server = uvicorn.Server(uvicorn_config)
-        self._api_thread = threading.Thread(target=self._api_server.run, daemon=True, name="api-server")
-        self._api_thread.start()
-
     def _log_state_transition(
         self,
         previous: TargetState,
@@ -482,3 +471,48 @@ class TrackingService:
         if target_state.status == TrackStatus.LOST:
             return TrackingPhase.LOST
         return TrackingPhase.SEARCHING
+
+    def ptz_test(self, direction: PtzDirection) -> None:
+        self._ptz.pulse(direction, self._config.control.pan_pulse_ms_small)
+
+    def _startup_runtime(self) -> None:
+        if self._runtime_started:
+            return
+        self._tracking_phase = TrackingPhase.SEARCHING
+        self._reader.start()
+        startup = self._ptz.startup_preset()
+        logger.info(
+            "startup_preset_result",
+            success=startup.success,
+            dry_run=startup.dry_run,
+            detail=startup.detail,
+        )
+        self._runtime_started = True
+
+    def _shutdown_runtime(self) -> None:
+        if not self._runtime_started:
+            return
+        self._tracking_phase = TrackingPhase.IDLE
+        logger.info("tracking_service_stopping")
+        self._reader.stop()
+        self._ptz.emergency_stop()
+        self._runtime_started = False
+        if self._config.app.debug_window:
+            cv2.destroyAllWindows()
+
+    def _run_worker(self) -> None:
+        try:
+            self.run_loop()
+        except Exception:
+            logger.exception("tracking_worker_exited_with_error")
+        finally:
+            self._shutdown_runtime()
+
+    def _sleep_for_tick(self, started_at: float) -> None:
+        elapsed, remaining = self._loop_regulator.sleep_after(started_at)
+        if remaining <= 0 and elapsed > self._loop_regulator.target_period_seconds:
+            logger.debug(
+                "tracking_loop_overrun",
+                elapsed_seconds=round(elapsed, 4),
+                target_period_seconds=round(self._loop_regulator.target_period_seconds, 4),
+            )

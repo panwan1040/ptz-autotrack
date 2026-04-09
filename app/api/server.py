@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from contextlib import asynccontextmanager
 from threading import Lock
 from typing import Any
 
@@ -30,8 +31,21 @@ def create_app(
     metrics: MetricsRegistry,
     state_store: StateStore,
     ptz_test_callback: callable | None = None,
+    tracking_service: Any | None = None,
 ) -> FastAPI:
-    app = FastAPI(title=config.app.name)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Uvicorn owns the application lifecycle in the main thread. The
+        # tracking service runs as a managed worker so shutdown stays clean.
+        if tracking_service is not None:
+            tracking_service.start()
+        try:
+            yield
+        finally:
+            if tracking_service is not None:
+                tracking_service.stop()
+
+    app = FastAPI(title=config.app.name, lifespan=lifespan if tracking_service is not None else None)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
