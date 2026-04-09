@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -18,6 +18,7 @@ class Detector(Protocol):
 @dataclass(slots=True)
 class YoloDetector:
     config: DetectionSection
+    _model: YOLO = field(init=False)
 
     def __post_init__(self) -> None:
         self._model = YOLO(self.config.model_path)
