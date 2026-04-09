@@ -81,6 +81,78 @@ class DetectionSection(BaseModel):
     classes: list[str] = Field(default_factory=lambda: ["person"])
 
 
+class TargetMemorySection(BaseModel):
+    max_history_points: int = 6
+    confidence_window: int = 6
+    clear_after_seconds: float = 10.0
+
+
+class AppearanceSection(BaseModel):
+    enabled: bool = True
+    histogram_bins: int = 16
+    update_alpha: float = 0.20
+    min_similarity: float = 0.35
+    strong_similarity: float = 0.55
+
+
+class PredictionSection(BaseModel):
+    enabled: bool = True
+    lead_time_seconds: float = 0.35
+    min_history_points: int = 2
+    max_normalized_displacement: float = 0.18
+
+
+class MatchingWeightsSection(BaseModel):
+    confidence: float = 0.18
+    predicted_center: float = 0.24
+    last_center: float = 0.12
+    size_similarity: float = 0.10
+    motion_consistency: float = 0.12
+    appearance: float = 0.18
+    centeredness: float = 0.08
+    persistence: float = 0.10
+
+
+class RecoverySection(BaseModel):
+    missing_frame_count_short: int = 2
+    missing_frame_count_occluded: int = 5
+    short_loss_timeout_seconds: float = 1.0
+    occlusion_timeout_seconds: float = 2.5
+    recovery_local_timeout_seconds: float = 3.0
+    recovery_wide_timeout_seconds: float = 6.0
+    local_search_window_ratio: float = 0.16
+    zoom_out_step_pulse_ms: int = 140
+    max_recovery_zoom_steps: int = 3
+    recovery_zoom_cooldown_seconds: float = 1.5
+    zoom_out_first_min_height_ratio: float = 0.42
+    initial_confirm_frames: int = 3
+    post_occlusion_confirm_frames: int = 2
+    post_wide_recovery_confirm_frames: int = 4
+    allow_target_replacement: bool = False
+    replacement_score_margin: float = 0.35
+
+
+class HandoffSection(BaseModel):
+    enabled: bool = True
+    inner_dead_zone_x: float = 0.05
+    inner_dead_zone_y: float = 0.06
+    min_target_height_ratio: float = 0.28
+    max_target_height_ratio: float = 0.52
+    stable_center_frames: int = 4
+    min_persist_frames: int = 6
+
+
+class MonitoringSection(BaseModel):
+    handoff_break_timeout_seconds: float = 1.2
+    max_center_error: float = 0.18
+    break_on_large_error: bool = True
+
+
+class StaleFrameSection(BaseModel):
+    max_age_seconds: float = 0.75
+    aggressive_recovery_max_age_seconds: float = 0.30
+
+
 class TrackingSection(BaseModel):
     strategy: TargetStrategy = "stick_nearest"
     min_persist_frames: int = 3
@@ -88,6 +160,14 @@ class TrackingSection(BaseModel):
     switch_margin_ratio: float = 0.25
     ema_alpha: float = 0.35
     max_association_distance: float = 0.18
+    target_memory: TargetMemorySection = Field(default_factory=TargetMemorySection)
+    appearance: AppearanceSection = Field(default_factory=AppearanceSection)
+    prediction: PredictionSection = Field(default_factory=PredictionSection)
+    matching_weights: MatchingWeightsSection = Field(default_factory=MatchingWeightsSection)
+    recovery: RecoverySection = Field(default_factory=RecoverySection)
+    handoff: HandoffSection = Field(default_factory=HandoffSection)
+    monitoring: MonitoringSection = Field(default_factory=MonitoringSection)
+    stale_frame: StaleFrameSection = Field(default_factory=StaleFrameSection)
 
 
 class ZoomSection(BaseModel):
@@ -159,6 +239,10 @@ class AppConfig(BaseModel):
             raise ValueError("control.dead_zone_y must be between 0 and 0.5")
         if self.control.zoom.min_height_ratio >= self.control.zoom.max_height_ratio:
             raise ValueError("zoom min_height_ratio must be less than max_height_ratio")
+        if self.tracking.handoff.inner_dead_zone_x <= 0 or self.tracking.handoff.inner_dead_zone_x >= 0.5:
+            raise ValueError("tracking.handoff.inner_dead_zone_x must be between 0 and 0.5")
+        if self.tracking.handoff.inner_dead_zone_y <= 0 or self.tracking.handoff.inner_dead_zone_y >= 0.5:
+            raise ValueError("tracking.handoff.inner_dead_zone_y must be between 0 and 0.5")
         return self
 
     def sanitized_dump(self) -> dict[str, object]:

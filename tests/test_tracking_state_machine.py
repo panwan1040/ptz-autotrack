@@ -46,7 +46,27 @@ def test_state_machine_enters_lost_then_searching_after_timeout() -> None:
     assert searching.status == TrackStatus.SEARCHING
 
 
+def test_state_machine_requires_stricter_confirmation_after_loss() -> None:
+    machine = TrackingStateMachine(TrackingSection(min_persist_frames=1, recovery={"post_occlusion_confirm_frames": 2}))
+    previous = TargetState(
+        track_id=7,
+        bbox_xyxy=(100, 100, 200, 300),
+        last_seen_ts=1.0,
+        status=TrackStatus.LOST,
+        stable=True,
+        missing_frames=1,
+    )
+    state = machine.update(
+        SelectionResult(candidate=make_candidate(7, confirmed=True, hits=1), reason="reacquired_previous_target", score=0.8),
+        previous,
+        now=1.3,
+    )
+
+    assert state.status == TrackStatus.SEARCHING
+    assert state.stable is False
+
+
 def test_phase_compatibility_mapping() -> None:
-    assert compatibility_status_for_phase(TrackingPhase.ACQUIRING) == TrackStatus.SEARCHING
-    assert compatibility_status_for_phase(TrackingPhase.TRACKING) == TrackStatus.TRACKING
+    assert compatibility_status_for_phase(TrackingPhase.CANDIDATE_LOCK) == TrackStatus.SEARCHING
+    assert compatibility_status_for_phase(TrackingPhase.MONITORING) == TrackStatus.TRACKING
     assert compatibility_status_for_phase(TrackingPhase.RETURNING_HOME) == TrackStatus.LOST

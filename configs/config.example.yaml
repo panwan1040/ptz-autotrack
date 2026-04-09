@@ -53,6 +53,62 @@ tracking:
   switch_margin_ratio: 0.25
   ema_alpha: 0.35
   max_association_distance: 0.18
+  target_memory:
+    max_history_points: 6
+    confidence_window: 6
+    clear_after_seconds: 10.0
+  appearance:
+    enabled: true
+    histogram_bins: 16
+    update_alpha: 0.20
+    min_similarity: 0.35
+    strong_similarity: 0.55
+  prediction:
+    enabled: true
+    lead_time_seconds: 0.35
+    min_history_points: 2
+    max_normalized_displacement: 0.18
+  matching_weights:
+    confidence: 0.18
+    predicted_center: 0.24
+    last_center: 0.12
+    size_similarity: 0.10
+    motion_consistency: 0.12
+    appearance: 0.18
+    centeredness: 0.08
+    persistence: 0.10
+  recovery:
+    missing_frame_count_short: 2
+    missing_frame_count_occluded: 5
+    short_loss_timeout_seconds: 1.0
+    occlusion_timeout_seconds: 2.5
+    recovery_local_timeout_seconds: 3.0
+    recovery_wide_timeout_seconds: 6.0
+    local_search_window_ratio: 0.16
+    zoom_out_step_pulse_ms: 140
+    max_recovery_zoom_steps: 3
+    recovery_zoom_cooldown_seconds: 1.5
+    zoom_out_first_min_height_ratio: 0.42
+    initial_confirm_frames: 3
+    post_occlusion_confirm_frames: 2
+    post_wide_recovery_confirm_frames: 4
+    allow_target_replacement: false
+    replacement_score_margin: 0.35
+  handoff:
+    enabled: true
+    inner_dead_zone_x: 0.05
+    inner_dead_zone_y: 0.06
+    min_target_height_ratio: 0.28
+    max_target_height_ratio: 0.52
+    stable_center_frames: 4
+    min_persist_frames: 6
+  monitoring:
+    handoff_break_timeout_seconds: 1.2
+    max_center_error: 0.18
+    break_on_large_error: true
+  stale_frame:
+    max_age_seconds: 0.75
+    aggressive_recovery_max_age_seconds: 0.30
 
 control:
   enabled: true

@@ -23,6 +23,9 @@ app/
   camera/rtsp_reader.py
   control/
     control_logic.py
+    handoff_manager.py
+    lifecycle_manager.py
+    monitoring_policy.py
     ptz_client.py
     smoothing.py
     zoom_logic.py
@@ -34,6 +37,9 @@ app/
     snapshot_manager.py
     tracking_service.py
   tracking/
+    appearance_extractor.py
+    motion_predictor.py
+    target_matcher.py
     target_selector.py
     tracker.py
   utils/
@@ -118,7 +124,7 @@ When enabled:
 - `GET /metrics`
 - `POST /ptz/test/{direction}` where direction is one of `Left`, `Right`, `Up`, `Down`, `LeftUp`, `RightUp`, `LeftDown`, `RightDown`, `ZoomTele`, `ZoomWide`
 
-`GET /state` includes both compatibility status and explicit runtime phase, plus return-home flags and the last skipped PTZ reason.
+`GET /state` includes both compatibility status and explicit runtime phase, plus return-home flags, prediction fields, handoff state, missing-frame counts, and the last skipped PTZ reason.
 When the API is enabled, Uvicorn stays in the main process/main thread and the tracking worker is started and stopped through FastAPI lifespan.
 
 ## PTZ Behavior
@@ -142,21 +148,31 @@ Supported target selection strategies:
 - `highest_confidence`
 - `stick_nearest`
 
-The system still tracks one primary target, but the tracking layer is now a real internal track manager rather than per-frame ID assignment. Matching uses IoU, center distance, and size consistency so IDs survive mild motion, short occlusions, and modest zoom changes.
+The system still tracks one primary target, but the tracking layer is now a real internal track manager rather than per-frame ID assignment. Matching combines IoU, center distance, size consistency, lightweight appearance histograms, motion prediction, and temporal persistence so IDs survive mild motion, short occlusions, and modest zoom changes.
 
 Selection and switching behavior:
 
 - New tracks must persist for `tracking.min_persist_frames` before they are considered stable targets
-- The current target stays locked unless a competing confirmed target beats it by `tracking.switch_margin_ratio`
-- Short target loss enters `LOST`, then falls back to `SEARCHING` after `tracking.lost_timeout_seconds`
-- The API state now exposes whether the target is stable, visible, and why a selection/state transition happened
-- Runtime phase is richer than compatibility status: `searching`, `acquiring`, `tracking`, `lost`, `returning_home`, and `error`
+- The current target stays locked unless replacement policy is enabled and a competing confirmed target beats it by both `tracking.switch_margin_ratio` and `tracking.recovery.replacement_score_margin`
+- Short target loss keeps target memory alive instead of immediately switching identities
+- The API state now exposes whether the target is stable, visible, handoff-ready, stale, and why a selection/state transition happened
+- Runtime phase is richer than compatibility status: `searching`, `candidate_lock`, `centering`, `zooming_for_handoff`, `handoff`, `monitoring`, `temp_lost`, `occluded`, `recovery_local`, `recovery_wide`, `lost`, `returning_home`, and `error`
 
 Lost-target behavior:
 
+- `TEMP_LOST`: hold lock, stop aggressive PTZ, and wait for a plausible reappearance near the predicted position
+- `OCCLUDED`: preserve identity longer, resist switching, and rely on appearance plus motion continuity
+- `RECOVERY_LOCAL`: search around the predicted window before escalating to broad recovery
+- `RECOVERY_WIDE`: zoom out in conservative steps before broader reacquisition
 - `control.lost_behavior=hold`: stop issuing tracking motion and wait for reacquisition
 - `control.lost_behavior=zoom_out`: pulse zoom-out on cooldown to widen the scene for reacquisition
 - `control.lost_behavior=return_home`: optionally zoom out while lost, then return to the configured home preset after `control.return_home_timeout_seconds`
+
+Handoff and monitoring:
+
+- When the target stays inside the inner handoff dead zone for enough frames and reaches the desired size band, the service enters `HANDOFF`
+- `MONITORING` suppresses external PTZ while the camera or reduced-assistance mode keeps the subject framed
+- If the subject drifts badly or disappears during monitoring, the service breaks handoff and re-enters structured recovery instead of blindly switching targets
 
 ## Dry-Run and Detect-Only
 
@@ -212,6 +228,9 @@ If tracking jitters:
 - raise `tracking.min_persist_frames` to make new targets prove themselves longer
 - increase `movement_cooldown_seconds`
 - reduce `ema_alpha`
+- increase `tracking.recovery.short_loss_timeout_seconds` if brief tree/pole occlusions are being treated too aggressively
+- raise `tracking.appearance.min_similarity` if wrong-person handoffs happen after occlusion
+- increase `tracking.recovery.replacement_score_margin` if the system is still too willing to switch people
 
 If zoom oscillates:
 
@@ -241,7 +260,19 @@ If zoom oscillates:
 ### Wrong target selected
 - Switch tracking strategy
 - Increase confidence threshold
-- Tune association distance, `min_persist_frames`, and switch margin
+- Tune association distance, `min_persist_frames`, switch margin, and appearance weighting
+
+### Target walks behind a tree or pole
+- Increase `tracking.recovery.short_loss_timeout_seconds`
+- Increase `tracking.recovery.occlusion_timeout_seconds`
+- Check `tracking.appearance.enabled` and `tracking.appearance.min_similarity`
+- Use overlay or `/state` to confirm the system is reaching `temp_lost` or `occluded` instead of immediately switching
+
+### Target is lost after zooming in too tightly
+- Lower `tracking.handoff.min_target_height_ratio` if handoff is happening too late
+- Increase `tracking.recovery.zoom_out_first_min_height_ratio`
+- Increase `tracking.recovery.max_recovery_zoom_steps`
+- Confirm `RECOVERY_LOCAL` and `RECOVERY_WIDE` are issuing stepwise zoom-out before broader search
 
 ### HTTP PTZ fails
 - Check Dahua CGI auth mode
@@ -251,5 +282,6 @@ If zoom oscillates:
 ## Current Limitations
 
 - The default backend is still an in-repo tracker, not ByteTrack/BoT-SORT. It is much stronger than naive reassociation, but long full occlusions and severe camera jumps can still break identity continuity.
+- The appearance continuity layer is histogram-based by default. It is fast and practical for production, but it is weaker than a learned ReID model when clothing/background colors are similar.
 - Home-preset behavior depends on the Dahua model supporting the configured preset name. The PTZ client keeps this isolated so an ONVIF backend can be dropped in later without changing the service/control layers.
 - PTZ pulse execution is still synchronous by design for safety, so one large pulse can consume most of a control tick, but the scheduler no longer adds a second unconditional sleep afterward.

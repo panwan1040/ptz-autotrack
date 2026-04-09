@@ -4,7 +4,13 @@ from app.tracking.tracker import Tracker
 
 
 def test_tracker_keeps_stable_id_across_small_motion() -> None:
-    tracker = Tracker(TrackingSection(min_persist_frames=2, lost_timeout_seconds=1.0))
+    tracker = Tracker(
+        TrackingSection(
+            min_persist_frames=2,
+            lost_timeout_seconds=1.0,
+            recovery={"initial_confirm_frames": 2},
+        )
+    )
     first = tracker.update([Detection((100, 100, 200, 300), 0.8, "person")], 960, 540, 1.0)
     second = tracker.update([Detection((108, 102, 208, 302), 0.82, "person")], 960, 540, 1.1)
     third = tracker.update([Detection((116, 110, 216, 310), 0.85, "person")], 960, 540, 1.2)
@@ -17,7 +23,13 @@ def test_tracker_keeps_stable_id_across_small_motion() -> None:
 
 
 def test_tracker_marks_target_lost_then_reacquires_same_track() -> None:
-    tracker = Tracker(TrackingSection(min_persist_frames=1, lost_timeout_seconds=0.8))
+    tracker = Tracker(
+        TrackingSection(
+            min_persist_frames=1,
+            lost_timeout_seconds=0.8,
+            recovery={"initial_confirm_frames": 1, "post_occlusion_confirm_frames": 1},
+        )
+    )
     acquired = tracker.update([Detection((200, 80, 320, 360), 0.9, "person")], 960, 540, 1.0)
     lost = tracker.update([], 960, 540, 1.4)
     reacquired = tracker.update([Detection((210, 85, 330, 365), 0.88, "person")], 960, 540, 1.6)
@@ -26,3 +38,21 @@ def test_tracker_marks_target_lost_then_reacquires_same_track() -> None:
     assert lost.status == TrackStatus.LOST
     assert reacquired.status == TrackStatus.TRACKING
     assert reacquired.track_id == acquired.track_id
+
+
+def test_tracker_retains_target_memory_and_prediction_during_short_loss() -> None:
+    tracker = Tracker(
+        TrackingSection(
+            min_persist_frames=1,
+            lost_timeout_seconds=1.5,
+            recovery={"initial_confirm_frames": 1},
+        )
+    )
+    tracker.update([Detection((200, 120, 320, 360), 0.9, "person")], 960, 540, 1.0)
+    tracker.update([Detection((220, 120, 340, 360), 0.92, "person")], 960, 540, 1.2)
+    lost = tracker.update([], 960, 540, 1.4)
+
+    assert lost.status == TrackStatus.LOST
+    assert tracker.target_memory.track_id is not None
+    assert tracker.target_memory.missing_started_ts == 1.4
+    assert tracker.target_memory.predicted_window is not None

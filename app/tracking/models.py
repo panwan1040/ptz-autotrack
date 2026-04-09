@@ -19,8 +19,15 @@ class TrackRecord:
     age_frames: int = 1
     confirmed: bool = False
     visible: bool = True
+    appearance_signature: list[float] | None = None
 
-    def update(self, detection: Detection, now: float, min_persist_frames: int) -> None:
+    def update(
+        self,
+        detection: Detection,
+        now: float,
+        min_persist_frames: int,
+        appearance_signature: list[float] | None = None,
+    ) -> None:
         self.bbox_xyxy = detection.bbox_xyxy
         self.confidence = detection.confidence
         self.last_seen_ts = now
@@ -29,6 +36,8 @@ class TrackRecord:
         self.missed_frames = 0
         self.age_frames += 1
         self.visible = True
+        if appearance_signature is not None:
+            self.appearance_signature = appearance_signature
         if self.visible_streak >= max(1, min_persist_frames):
             self.confirmed = True
 
@@ -51,6 +60,8 @@ class TrackCandidate:
     last_seen_ts: float
     confirmed: bool
     visible: bool = True
+    appearance_signature: list[float] | None = None
+    match_breakdown: dict[str, float] | None = None
 
     @classmethod
     def from_record(cls, record: TrackRecord) -> "TrackCandidate":
@@ -65,6 +76,7 @@ class TrackCandidate:
             last_seen_ts=record.last_seen_ts,
             confirmed=record.confirmed,
             visible=record.visible,
+            appearance_signature=record.appearance_signature,
         )
 
 
