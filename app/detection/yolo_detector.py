@@ -43,8 +43,9 @@ class YoloDetector:
         for box in result.boxes:
             class_id = int(box.cls[0].item())
             class_name = str(names[class_id])
-            if class_name != "person":
+            if class_name not in ["person", "pedestrian", "people"]:
                 continue
+            class_name = "person"
             x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
             conf = float(box.conf[0].item())
             detections.append(
