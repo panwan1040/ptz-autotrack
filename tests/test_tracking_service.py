@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 import numpy as np
+import pytest
 from pydantic import SecretStr
 
 from app.config import (
@@ -15,7 +16,7 @@ from app.config import (
     VideoSection,
 )
 from app.control.ptz_client import PtzCommandResult
-from app.models.runtime import ControlDecision, TargetMemory, TargetState, TrackStatus, TrackingPhase
+from app.models.runtime import ControlDecision, Detection, TargetMemory, TargetState, TrackStatus, TrackingPhase
 from app.services.tracking_service import TrackingService
 
 
@@ -238,3 +239,45 @@ def test_stale_frame_blocks_local_recovery_motion() -> None:
 
     assert ptz.starts == []
     assert service._last_skip_reason == "stale_frame_blocks_local_recovery"
+
+
+def test_handle_fatal_exception_saves_crash_snapshot_and_marks_fatal_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _ptz = make_service(ControlSection())
+    saved: dict[str, object] = {}
+    frame = np.zeros((24, 24, 3), dtype=np.uint8)
+
+    class Packet:
+        frame_index = 42
+        timestamp = 123.0
+
+        def __init__(self, payload: np.ndarray) -> None:
+            self.frame = payload
+
+    def fake_save(image: np.ndarray, prefix: str, timestamp: float) -> str:
+        saved["shape"] = image.shape
+        saved["prefix"] = prefix
+        saved["timestamp"] = timestamp
+        return "artifacts/snapshots/fatal-crash.jpg"
+
+    monkeypatch.setattr(service._snapshot_manager, "save", fake_save)
+
+    target = TargetState(
+        track_id=7,
+        bbox_xyxy=(10.0, 20.0, 30.0, 40.0),
+        status=TrackStatus.TRACKING,
+        stable=True,
+        visible=True,
+        selection_reason="matcher_failure",
+    )
+
+    service._handle_fatal_exception(
+        RuntimeError("boom"),
+        Packet(frame),
+        [Detection(bbox_xyxy=(1.0, 2.0, 3.0, 4.0), confidence=0.9, class_name="person")],
+        target,
+        ControlDecision(reason="move"),
+    )
+
+    assert service._fatal_shutdown_pending is True
+    assert saved["shape"] == frame.shape
+    assert saved["prefix"] == "fatal-crash"

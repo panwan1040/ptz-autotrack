@@ -1,22 +1,52 @@
 from __future__ import annotations
 
 from math import sqrt
+from numbers import Real
+from typing import Sequence
 
 
 BBox = tuple[float, float, float, float]
 
 
+def validate_bbox_input(helper_name: str, bbox: object) -> BBox:
+    if not isinstance(bbox, Sequence) or isinstance(bbox, (str, bytes)):
+        raise TypeError(
+            f"{helper_name} expected bbox tuple[4], got {type(bbox).__name__}: {_truncated_repr(bbox)}"
+        )
+    if len(bbox) != 4:
+        raise ValueError(
+            f"{helper_name} expected bbox tuple[4], got length {len(bbox)}: {_truncated_repr(bbox)}"
+        )
+    values = tuple(bbox)
+    if not all(isinstance(value, Real) for value in values):
+        raise TypeError(
+            f"{helper_name} expected bbox tuple[4] of real numbers, got {type(bbox).__name__}: {_truncated_repr(bbox)}"
+        )
+    x1, y1, x2, y2 = values
+    return (float(x1), float(y1), float(x2), float(y2))
+
+
+def _truncated_repr(value: object, limit: int = 160) -> str:
+    rendered = repr(value)
+    if len(rendered) <= limit:
+        return rendered
+    return f"{rendered[: limit - 3]}..."
+
+
 def bbox_center(bbox: BBox) -> tuple[float, float]:
+    bbox = validate_bbox_input("bbox_center", bbox)
     x1, y1, x2, y2 = bbox
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 
 def bbox_width(bbox: BBox) -> float:
+    bbox = validate_bbox_input("bbox_width", bbox)
     x1, _y1, x2, _y2 = bbox
     return max(0.0, x2 - x1)
 
 
 def bbox_height(bbox: BBox) -> float:
+    bbox = validate_bbox_input("bbox_height", bbox)
     _x1, y1, _x2, y2 = bbox
     return max(0.0, y2 - y1)
 
@@ -26,6 +56,8 @@ def bbox_area(bbox: BBox) -> float:
 
 
 def bbox_iou(a: BBox, b: BBox) -> float:
+    a = validate_bbox_input("bbox_iou", a)
+    b = validate_bbox_input("bbox_iou", b)
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     inter_x1 = max(ax1, bx1)
@@ -42,6 +74,8 @@ def bbox_iou(a: BBox, b: BBox) -> float:
 
 
 def bbox_size_similarity(a: BBox, b: BBox) -> float:
+    a = validate_bbox_input("bbox_size_similarity", a)
+    b = validate_bbox_input("bbox_size_similarity", b)
     area_a = bbox_area(a)
     area_b = bbox_area(b)
     if area_a <= 0 or area_b <= 0:
@@ -54,15 +88,19 @@ def normalize_point(x: float, y: float, frame_width: float, frame_height: float)
 
 
 def normalized_bbox_center(bbox: BBox, frame_width: float, frame_height: float) -> tuple[float, float]:
+    bbox = validate_bbox_input("normalized_bbox_center", bbox)
     cx, cy = bbox_center(bbox)
     return normalize_point(cx, cy, frame_width, frame_height)
 
 
 def height_ratio(bbox: BBox, frame_height: float) -> float:
+    bbox = validate_bbox_input("height_ratio", bbox)
     return bbox_height(bbox) / frame_height if frame_height > 0 else 0.0
 
 
 def center_distance_normalized(a: BBox, b: BBox, frame_width: float, frame_height: float) -> float:
+    a = validate_bbox_input("center_distance_normalized", a)
+    b = validate_bbox_input("center_distance_normalized", b)
     ax, ay = normalized_bbox_center(a, frame_width, frame_height)
     bx, by = normalized_bbox_center(b, frame_width, frame_height)
     return sqrt((ax - bx) ** 2 + (ay - by) ** 2)

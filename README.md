@@ -311,6 +311,11 @@ If zoom oscillates:
 - Reduce pulse sizes before increasing tick rate if CPU is already tight
 - Check `ptz_command_attempt_total` versus `ptz_command_success_total` to see whether cooldowns or skips are the real bottleneck
 
+### Debug window closes unexpectedly
+- Check the logs for `tracking_service_exception` and `tracking_service_debug_window_closing_after_exception`
+- A fatal crash now writes a `fatal-crash-*.jpg` snapshot into the snapshot directory before the normal safe shutdown path runs
+- Geometry helper misuse now raises explicit errors like `bbox_center expected bbox tuple[4], got TrackCandidate ...`, which usually points directly to the bad call site
+
 ### HTTP PTZ fails
 - Check Dahua CGI auth mode
 - Confirm camera user has PTZ privilege

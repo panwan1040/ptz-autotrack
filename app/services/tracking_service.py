@@ -96,6 +96,9 @@ class TrackingService:
         self._last_skip_reason: str | None = None
         self._last_command_outcome: dict[str, object] = {}
         self._runtime_started = False
+        self._last_visual_frame: np.ndarray | None = None
+        self._last_frame_index: int | None = None
+        self._fatal_shutdown_pending = False
 
     @property
     def state_store(self) -> StateStore:
@@ -147,6 +150,10 @@ class TrackingService:
         logger.info("tracking_service_started")
         self._tracking_phase = TrackingPhase.SEARCHING
         base_read_timeout = min(1.0, max(0.05, self._loop_regulator.target_period_seconds or 0.05))
+        packet = None
+        detections: list[Detection] = []
+        target_state: TargetState | None = None
+        decision: ControlDecision | None = None
         try:
             while not self._stop_event.is_set():
                 loop_started_at = time.monotonic()
@@ -229,7 +236,7 @@ class TrackingService:
                 self._sleep_for_tick(loop_started_at)
         except Exception as exc:
             self._tracking_phase = TrackingPhase.ERROR
-            logger.exception("tracking_service_exception", error=str(exc))
+            self._handle_fatal_exception(exc, packet, detections, target_state, decision)
             self._shutdown_scheduler(time.monotonic())
             self._ptz.emergency_stop()
             raise
@@ -744,17 +751,76 @@ class TrackingService:
             },
         )
         self._state_store.set_snapshot(snapshot)
+        self._last_frame_index = frame_index
         if self._config.app.overlay:
             overlay = draw_overlay(frame, snapshot, self._config.control)
+            self._last_visual_frame = overlay.copy()
             if self._config.app.debug_window:
                 cv2.imshow("ptz-autotrack", overlay)
                 cv2.waitKey(1)
+        else:
+            self._last_visual_frame = frame.copy()
         if (
             self._config.snapshots.periodic_debug_frame_seconds > 0
             and timestamp - self._last_snapshot_ts >= self._config.snapshots.periodic_debug_frame_seconds
         ):
             self._snapshot_manager.save(frame, "periodic", timestamp)
             self._last_snapshot_ts = timestamp
+
+    def _handle_fatal_exception(
+        self,
+        exc: Exception,
+        packet: object | None,
+        detections: list[Detection],
+        target_state: TargetState | None,
+        decision: ControlDecision | None,
+    ) -> None:
+        self._fatal_shutdown_pending = True
+        active_target = target_state or self._tracker.state or self._previous_target
+        crash_snapshot_path = self._save_crash_snapshot(packet)
+        logger.exception(
+            "tracking_service_exception",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            phase=self._tracking_phase.value,
+            frame_index=getattr(packet, "frame_index", self._last_frame_index),
+            detection_count=len(detections),
+            track_id=active_target.track_id,
+            target_visible=active_target.visible,
+            target_stable=active_target.stable,
+            target_status=active_target.status.value,
+            selection_reason=active_target.selection_reason,
+            target_bbox=active_target.bbox_xyxy,
+            predicted_center=active_target.predicted_center,
+            missing_frames=active_target.missing_frames,
+            match_breakdown=active_target.match_breakdown,
+            decision_reason=decision.reason if decision is not None else None,
+            control_mode=decision.control_mode.value if decision is not None else None,
+            last_ptz_action=self._last_ptz_action,
+            last_skip_reason=self._last_skip_reason,
+            crash_snapshot_path=crash_snapshot_path,
+        )
+        if self._config.app.debug_window:
+            logger.error(
+                "tracking_service_debug_window_closing_after_exception",
+                frame_index=getattr(packet, "frame_index", self._last_frame_index),
+                crash_snapshot_path=crash_snapshot_path,
+            )
+
+    def _save_crash_snapshot(self, packet: object | None) -> str | None:
+        frame = None
+        if packet is not None:
+            frame = getattr(packet, "frame", None)
+        if frame is None:
+            frame = self._last_visual_frame
+        if frame is None:
+            return None
+        try:
+            path = self._snapshot_manager.save(frame, "fatal-crash", time.time())
+            return str(path)
+        except Exception:
+            logger.exception("tracking_service_fatal_snapshot_failed")
+            return None
 
     def _save_action_screenshot(self, frame: np.ndarray, action: str, now: float) -> None:
         if self._config.app.save_action_screenshots:
@@ -891,11 +957,15 @@ class TrackingService:
         if not self._runtime_started:
             return
         self._tracking_phase = TrackingPhase.IDLE
-        logger.info("tracking_service_stopping")
+        logger.info(
+            "tracking_service_stopping",
+            reason="fatal_exception" if self._fatal_shutdown_pending else "normal_shutdown",
+        )
         self._reader.stop()
         self._shutdown_scheduler(time.monotonic())
         self._ptz.emergency_stop()
         self._runtime_started = False
+        self._fatal_shutdown_pending = False
         if self._config.app.debug_window:
             cv2.destroyAllWindows()
 

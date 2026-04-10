@@ -62,3 +62,30 @@ def test_target_matcher_prefers_candidate_near_prediction_and_appearance() -> No
     weak_score, _ = matcher.score(weak, memory, 960, 540)
 
     assert strong_score > weak_score
+
+
+def test_target_matcher_uses_candidate_bbox_for_motion_vector() -> None:
+    tracking = TrackingSection()
+    matcher = TargetMatcher(tracking, AppearanceExtractor(tracking.appearance))
+    memory = TargetMemory(
+        track_id=9,
+        last_center=(190.0, 170.0),
+        last_direction=(8.0, 4.0),
+        last_confirmed_bbox=(150.0, 100.0, 230.0, 260.0),
+    )
+    candidate = TrackCandidate(
+        track_id=9,
+        bbox_xyxy=(160.0, 110.0, 240.0, 270.0),
+        confidence=0.8,
+        persist_frames=4,
+        total_visible_frames=4,
+        age_frames=4,
+        missed_frames=0,
+        last_seen_ts=1.0,
+        confirmed=True,
+    )
+
+    score, breakdown = matcher.score(candidate, memory, 960, 540)
+
+    assert score > 0.0
+    assert "motion_consistency" in breakdown

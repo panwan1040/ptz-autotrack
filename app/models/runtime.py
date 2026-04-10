@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from app.utils.geometry import BBox
+
 
 class TrackStatus(str, Enum):
     SEARCHING = "searching"
@@ -55,7 +57,7 @@ class ControlMode(str, Enum):
 
 @dataclass(slots=True)
 class Detection:
-    bbox_xyxy: tuple[float, float, float, float]
+    bbox_xyxy: BBox
     confidence: float
     class_name: str
     tracker_id: int | None = None
@@ -72,7 +74,7 @@ class FramePacket:
 @dataclass(slots=True)
 class TargetState:
     track_id: int | None
-    bbox_xyxy: tuple[float, float, float, float] | None
+    bbox_xyxy: BBox | None
     confidence: float = 0.0
     persist_frames: int = 0
     last_seen_ts: float = 0.0
@@ -83,7 +85,7 @@ class TargetState:
     candidate_score: float = 0.0
     lost_duration_seconds: float = 0.0
     predicted_center: tuple[float, float] | None = None
-    predicted_window: tuple[float, float, float, float] | None = None
+    predicted_window: BBox | None = None
     appearance_similarity: float = 0.0
     missing_frames: int = 0
     visible_frames: int = 0
@@ -99,8 +101,8 @@ class TargetState:
 class TargetMemory:
     track_id: int | None = None
     last_confirmed_ts: float = 0.0
-    last_confirmed_bbox: tuple[float, float, float, float] | None = None
-    last_smoothed_bbox: tuple[float, float, float, float] | None = None
+    last_confirmed_bbox: BBox | None = None
+    last_smoothed_bbox: BBox | None = None
     last_center: tuple[float, float] | None = None
     last_velocity: tuple[float, float] = (0.0, 0.0)
     last_direction: tuple[float, float] = (0.0, 0.0)
@@ -117,7 +119,7 @@ class TargetMemory:
     centered_frames: int = 0
     recovery_zoom_steps: int = 0
     predicted_center: tuple[float, float] | None = None
-    predicted_window: tuple[float, float, float, float] | None = None
+    predicted_window: BBox | None = None
     prediction_confidence: float = 0.0
     appearance_similarity: float = 0.0
     last_match_score: float = 0.0

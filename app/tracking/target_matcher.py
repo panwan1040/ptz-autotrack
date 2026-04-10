@@ -8,6 +8,7 @@ from app.models.runtime import TargetMemory
 from app.tracking.appearance_extractor import AppearanceExtractor
 from app.tracking.models import TrackCandidate
 from app.utils.geometry import (
+    BBox,
     bbox_area,
     bbox_center,
     bbox_size_similarity,
@@ -31,7 +32,8 @@ class TargetMatcher:
         frame_height: int,
     ) -> tuple[float, dict[str, float]]:
         weights = self.config.matching_weights
-        nx, ny = normalized_bbox_center(candidate.bbox_xyxy, frame_width, frame_height)
+        candidate_bbox = self._candidate_bbox(candidate)
+        nx, ny = normalized_bbox_center(candidate_bbox, frame_width, frame_height)
         centeredness = max(0.0, 1.0 - (abs(nx - 0.5) + abs(ny - 0.5)))
         persistence = min(1.0, candidate.total_visible_frames / max(1, self.config.min_persist_frames))
         predicted_score = 0.5
@@ -46,7 +48,7 @@ class TargetMatcher:
                 predicted_score = max(
                     0.0,
                     1.0 - center_distance_normalized(
-                        candidate.bbox_xyxy,
+                        candidate_bbox,
                         predicted_bbox,
                         frame_width,
                         frame_height,
@@ -55,12 +57,12 @@ class TargetMatcher:
             if memory.last_center is not None:
                 last_center_score = max(
                     0.0,
-                    1.0 - self._center_distance(candidate.bbox_xyxy, memory.last_center, frame_width, frame_height),
+                    1.0 - self._center_distance(candidate_bbox, memory.last_center, frame_width, frame_height),
                 )
-                movement = self._movement_vector(candidate, memory.last_center)
+                movement = self._movement_vector(candidate_bbox, memory.last_center)
                 motion_consistency = self._direction_similarity(memory.last_direction, movement)
             if memory.last_confirmed_bbox is not None:
-                size_similarity = bbox_size_similarity(candidate.bbox_xyxy, memory.last_confirmed_bbox)
+                size_similarity = bbox_size_similarity(candidate_bbox, memory.last_confirmed_bbox)
             appearance_similarity = self.appearance_extractor.similarity(
                 memory.appearance_signature,
                 candidate.appearance_signature,
@@ -95,15 +97,19 @@ class TargetMatcher:
         self,
         candidate: TrackCandidate,
         center: tuple[float, float],
-    ) -> tuple[float, float, float, float]:
-        width = max(1.0, bbox_area(candidate.bbox_xyxy) ** 0.5)
-        height = max(width, bbox_area(candidate.bbox_xyxy) / width)
+    ) -> BBox:
+        candidate_bbox = self._candidate_bbox(candidate)
+        width = max(1.0, bbox_area(candidate_bbox) ** 0.5)
+        height = max(width, bbox_area(candidate_bbox) / width)
         cx, cy = center
         return (cx - (width / 2.0), cy - (height / 2.0), cx + (width / 2.0), cy + (height / 2.0))
 
+    def _candidate_bbox(self, candidate: TrackCandidate) -> BBox:
+        return candidate.bbox_xyxy
+
     def _center_distance(
         self,
-        bbox: tuple[float, float, float, float],
+        bbox: BBox,
         center: tuple[float, float],
         frame_width: int,
         frame_height: int,
@@ -113,7 +119,7 @@ class TargetMatcher:
 
     def _movement_vector(
         self,
-        bbox: tuple[float, float, float, float],
+        bbox: BBox,
         last_center: tuple[float, float],
     ) -> tuple[float, float]:
         bx, by = bbox_center(bbox)
