@@ -47,9 +47,12 @@ def draw_overlay(
         f"ptz={snapshot.decision.move_direction.value if snapshot.decision.move_direction else 'idle'}",
         f"zoom={snapshot.decision.zoom_direction.value if snapshot.decision.zoom_direction else 'idle'}",
         f"reason={snapshot.target.selection_reason}",
+        f"loss_cause={snapshot.target.loss_cause}",
+        f"tight_zoom={snapshot.target.tight_zoom_detected} settle={snapshot.target.recovery_settle_ticks_remaining}",
         f"appearance={snapshot.target.appearance_similarity:.2f}",
         f"pred_used={snapshot.decision.prediction_used} conf={snapshot.decision.prediction_confidence:.2f}",
         f"pulse={snapshot.ptz_runtime.get('pulse_active', False)} dir={snapshot.ptz_runtime.get('active_ptz_direction')}",
+        f"recovery_steps={snapshot.extras.get('recovery_zoom_steps', 0)} return_home_pending={snapshot.extras.get('return_home_pending', False)}",
         f"frame_age={snapshot.target.frame_age_seconds:.2f}s stale={snapshot.target.stale_frame}",
         f"fps={snapshot.extras.get('fps', 0):.1f}",
     ]

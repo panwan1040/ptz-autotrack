@@ -15,7 +15,7 @@ from app.control.control_logic import ControlLogic
 from app.control.handoff_manager import HandoffManager
 from app.control.lifecycle_manager import LifecycleManager
 from app.control.monitoring_policy import MonitoringPolicy
-from app.control.ptz_client import DahuaPtzClient
+from app.control.ptz_client import DahuaPtzClient, PtzCommandResult
 from app.control.ptz_runtime_state import PtzScheduleResult
 from app.control.ptz_scheduler import PtzScheduler
 from app.control.smoothing import EmaSmoother
@@ -218,6 +218,7 @@ class TrackingService:
                     control_now,
                     frame.shape[1],
                     frame.shape[0],
+                    len(detections),
                 )
                 self._execute_decision(frame, target_state, decision, control_now)
                 self._publish_snapshot(
@@ -271,8 +272,16 @@ class TrackingService:
         now: float,
         frame_width: int,
         frame_height: int,
+        visible_candidate_count: int = 0,
     ) -> None:
         memory = self._tracker.target_memory
+        tight_zoom_detected = self._is_tight_zoom_detected(current, frame_height)
+        loss_cause = self._classify_loss_cause(current, memory, frame_width, frame_height, tight_zoom_detected)
+        current.tight_zoom_detected = tight_zoom_detected
+        current.recovery_settle_ticks_remaining = memory.recovery_settle_ticks_remaining
+        current.loss_cause = loss_cause
+        memory.tight_zoom_detected = tight_zoom_detected
+        memory.loss_cause = loss_cause
         handoff_ready, handoff_reason = self._handoff_manager.evaluate(current, memory, frame_width, frame_height)
         current.handoff_ready = handoff_ready
         current.centered_frames = memory.centered_frames
@@ -307,6 +316,8 @@ class TrackingService:
             handoff_ready=handoff_ready,
             handoff_zoom_candidate=handoff_zoom_candidate,
             monitoring_broken=monitoring_broken,
+            visible_candidate_count=visible_candidate_count,
+            tight_zoom_detected=tight_zoom_detected,
             return_home_issued=self._return_home_issued,
             now=now,
         )
@@ -323,6 +334,9 @@ class TrackingService:
         if current.visible and current.stable:
             self._startup_frames += 1
             self._return_home_issued = False
+            memory.return_home_pending = False
+            memory.recovery_settle_ticks_remaining = 0
+            memory.recovery_zoom_steps = 0
             if self._tracking_phase not in {TrackingPhase.HANDOFF, TrackingPhase.MONITORING}:
                 memory.handoff_ts = None
             if previous.status != TrackStatus.TRACKING and self._config.snapshots.on_target_acquired:
@@ -365,12 +379,14 @@ class TrackingService:
                 memory.handoff_ts = now
             return
 
+        if self._tracking_phase == TrackingPhase.RECOVERY_ZOOM_OUT:
+            self._execute_recovery_zoom_out(target_state, now)
+            return
+
         if self._tracking_phase == TrackingPhase.RECOVERY_LOCAL:
             if target_state.frame_age_seconds > self._config.tracking.stale_frame.aggressive_recovery_max_age_seconds:
                 self._log_local_skip("stale_frame_blocks_local_recovery", target_state, now)
                 self._metrics.stale_frame_suppressed_action_count.inc()
-                return
-            if self._maybe_zoom_out_for_recovery(now):
                 return
             self._execute_local_recovery(frame, target_state, now, frame_width, frame_height)
             return
@@ -378,7 +394,13 @@ class TrackingService:
         if self._tracking_phase == TrackingPhase.RECOVERY_WIDE:
             if self._maybe_zoom_out_for_recovery(now):
                 return
+            if self._maybe_return_to_recovery_preset(now):
+                return
             self._apply_lost_behavior(now)
+            return
+
+        if self._tracking_phase == TrackingPhase.RETURNING_HOME:
+            memory.return_home_pending = False
             return
 
         if self._tracking_phase == TrackingPhase.LOST:
@@ -396,6 +418,96 @@ class TrackingService:
 
         memory.recovery_zoom_steps = 0
 
+    def _execute_recovery_zoom_out(
+        self,
+        target_state: TargetState,
+        now: float,
+    ) -> None:
+        memory = self._tracker.target_memory
+        if target_state.frame_age_seconds > self._config.tracking.stale_frame.aggressive_recovery_max_age_seconds:
+            self._log_local_skip("stale_frame_blocks_recovery_zoom_out", target_state, now)
+            self._metrics.stale_frame_suppressed_action_count.inc()
+            return
+        if memory.recovery_settle_ticks_remaining > 0:
+            memory.recovery_settle_ticks_remaining -= 1
+            target_state.recovery_settle_ticks_remaining = memory.recovery_settle_ticks_remaining
+            self._log_local_skip("recovery_zoom_out_settling", target_state, now)
+            return
+        if not memory.tight_zoom_detected or memory.recovery_zoom_steps >= self._config.tracking.recovery.max_recovery_zoom_steps:
+            self._log_local_skip("recovery_zoom_out_not_needed", target_state, now)
+            return
+
+        intent = PtzIntent(
+            kind=PtzIntentKind.ZOOM,
+            direction=PtzDirection.ZOOM_OUT,
+            pulse_ms=self._config.tracking.recovery.recovery_zoom_out_step_pulse_ms,
+            reason="recovery_zoom_out_stage",
+            control_mode=ControlMode.RECOVERY,
+            allow_interrupt=True,
+            priority=2,
+        )
+        result = self._submit_intent(intent, now, move_cooldown=False, zoom_cooldown=False)
+        if result.succeeded:
+            if memory.recovery_zoom_steps == 0 and self._loss_started_at is not None:
+                self._metrics.loss_to_first_zoomout_seconds.observe(max(0.0, now - self._loss_started_at))
+            memory.recovery_zoom_steps += 1
+            memory.recovery_settle_ticks_remaining = self._config.tracking.recovery.recovery_zoom_out_settle_ticks
+            target_state.recovery_settle_ticks_remaining = memory.recovery_settle_ticks_remaining
+            self._recovery_zoom_cooldown.mark(now)
+            self._metrics.recovery_zoom_out_step_count.inc()
+
+    def _maybe_return_to_recovery_preset(self, now: float) -> bool:
+        recovery = self._config.tracking.recovery
+        if not recovery.recovery_return_home_enabled or self._return_home_issued:
+            return False
+        if self._loss_started_at is None:
+            return False
+        if now - self._loss_started_at < recovery.recovery_return_home_timeout_seconds:
+            return False
+
+        self._issue_stop(now, "recovery_return_preset")
+        result, preset_name = self._issue_recovery_return_preset()
+        logger.info(
+            "tracking_recovery_return_preset",
+            success=result.success,
+            detail=result.detail,
+            preset=preset_name,
+        )
+        if not result.success:
+            return False
+        self._return_home_issued = True
+        self._metrics.return_home_after_loss_count.inc()
+        self._tracking_phase = TrackingPhase.RETURNING_HOME
+        self._last_ptz_action = "return_home"
+        self._tracker.clear_target_memory()
+        self._tracker.target_memory.return_home_pending = True
+        self._tracker.target_memory.lifecycle_state = TrackingPhase.RETURNING_HOME
+        self._previous_target = TargetState(track_id=None, bbox_xyxy=None)
+        return True
+
+    def _issue_recovery_return_preset(self) -> tuple[PtzCommandResult, str | None]:
+        recovery = self._config.tracking.recovery
+        preset_name = recovery.recovery_return_preset_name
+        if preset_name:
+            return self._ptz.move_to_preset(preset_name, purpose="recovery_return"), preset_name
+        if self._config.camera.home_preset_name:
+            return self._ptz.move_home(), self._config.camera.home_preset_name
+        if recovery.recovery_return_to_startup_preset_if_home_missing and self._config.camera.startup_preset_name:
+            return self._ptz.startup_preset(), self._config.camera.startup_preset_name
+        return (
+            PtzCommandResult(
+                success=False,
+                action="preset",
+                direction="recovery_return",
+                pulse_ms=0,
+                dry_run=self._ptz.is_dry_run,
+                issued=False,
+                detail="recovery_return_preset_not_configured",
+                accepted=False,
+            ),
+            None,
+        )
+
     def _maybe_zoom_out_for_recovery(self, now: float) -> bool:
         memory = self._tracker.target_memory
         if (
@@ -404,14 +516,14 @@ class TrackingService:
         ):
             return False
         if (
-            memory.last_zoom_ratio < self._config.tracking.recovery.zoom_out_first_min_height_ratio
+            memory.last_zoom_ratio < self._config.tracking.recovery.tight_zoom_height_ratio_threshold
             and memory.recovery_zoom_steps == 0
         ):
             return False
         intent = PtzIntent(
             kind=PtzIntentKind.ZOOM,
             direction=PtzDirection.ZOOM_OUT,
-            pulse_ms=self._config.tracking.recovery.zoom_out_step_pulse_ms,
+            pulse_ms=self._config.tracking.recovery.recovery_zoom_out_step_pulse_ms,
             reason="recovery_zoom_out",
             control_mode=ControlMode.RECOVERY,
             allow_interrupt=True,
@@ -736,14 +848,27 @@ class TrackingService:
                 "stop_pending": self._ptz_scheduler.state.stop_pending,
             },
             last_command_outcome=self._last_command_outcome,
-            return_home_enabled=bool(self._config.camera.home_preset_name),
+            return_home_enabled=bool(
+                self._config.tracking.recovery.recovery_return_preset_name
+                or self._config.camera.home_preset_name
+                or (
+                    self._config.tracking.recovery.recovery_return_to_startup_preset_if_home_missing
+                    and self._config.camera.startup_preset_name
+                )
+            ),
             return_home_issued=self._return_home_issued,
             extras={
                 "fps": source_fps,
                 "loss_started_at": self._loss_started_at,
+                "loss_age_seconds": max(0.0, now - self._loss_started_at) if self._loss_started_at is not None else 0.0,
                 "return_home_issued": self._return_home_issued,
+                "return_home_pending": self._tracker.target_memory.return_home_pending,
                 "prediction_confidence": self._tracker.target_memory.prediction_confidence,
                 "recovery_zoom_steps": self._tracker.target_memory.recovery_zoom_steps,
+                "settle_ticks_remaining": self._tracker.target_memory.recovery_settle_ticks_remaining,
+                "tight_zoom_detected": self._tracker.target_memory.tight_zoom_detected,
+                "recovery_stage": self._tracking_phase.value,
+                "loss_cause": self._tracker.target_memory.loss_cause,
                 "memory_track_id": self._tracker.target_memory.track_id,
                 "average_frame_age_ms": round(target_state.frame_age_seconds * 1000.0, 2),
                 "current_control_mode": decision.control_mode.value,
@@ -867,6 +992,14 @@ class TrackingService:
         if self._tracking_phase == TrackingPhase.OCCLUDED and previous_phase != TrackingPhase.OCCLUDED:
             self._metrics.occlusion_count.inc()
             logger.info("tracking_occluded", track_id=current.track_id, missing_frames=current.missing_frames)
+        if self._tracking_phase == TrackingPhase.RECOVERY_ZOOM_OUT and previous_phase != TrackingPhase.RECOVERY_ZOOM_OUT:
+            self._metrics.recovery_zoom_out_count.inc()
+            logger.info(
+                "tracking_recovery_zoom_out_started",
+                track_id=current.track_id,
+                tight_zoom_detected=current.tight_zoom_detected,
+                loss_cause=current.loss_cause,
+            )
         if self._tracking_phase == TrackingPhase.RECOVERY_LOCAL and previous_phase != TrackingPhase.RECOVERY_LOCAL:
             self._metrics.local_recovery_count.inc()
             logger.info("tracking_recovery_local_started", track_id=current.track_id)
@@ -881,6 +1014,7 @@ class TrackingService:
         if previous_phase in {TrackingPhase.HANDOFF, TrackingPhase.MONITORING} and self._tracking_phase in {
             TrackingPhase.TEMP_LOST,
             TrackingPhase.OCCLUDED,
+            TrackingPhase.RECOVERY_ZOOM_OUT,
             TrackingPhase.RECOVERY_LOCAL,
             TrackingPhase.RECOVERY_WIDE,
         }:
@@ -900,6 +1034,15 @@ class TrackingService:
                 reason=current.selection_reason,
                 stable=current.stable,
             )
+        if previous_phase == TrackingPhase.RECOVERY_ZOOM_OUT and current.status == TrackStatus.TRACKING:
+            self._metrics.recovery_zoom_out_success_count.inc()
+        if previous_phase == TrackingPhase.RECOVERY_ZOOM_OUT and self._tracking_phase in {
+            TrackingPhase.RECOVERY_LOCAL,
+            TrackingPhase.RECOVERY_WIDE,
+            TrackingPhase.RETURNING_HOME,
+            TrackingPhase.LOST,
+        }:
+            self._metrics.recovery_zoom_out_abort_count.inc()
 
     def _copy_target_state(self, target: TargetState) -> TargetState:
         return TargetState(
@@ -924,6 +1067,9 @@ class TrackingService:
             frame_age_seconds=target.frame_age_seconds,
             stale_frame=target.stale_frame,
             prediction_confidence=target.prediction_confidence,
+            tight_zoom_detected=target.tight_zoom_detected,
+            recovery_settle_ticks_remaining=target.recovery_settle_ticks_remaining,
+            loss_cause=target.loss_cause,
             match_breakdown=target.match_breakdown.copy(),
         )
 
@@ -996,3 +1142,34 @@ class TrackingService:
                 elapsed_seconds=round(elapsed, 4),
                 target_period_seconds=round(self._loop_regulator.target_period_seconds, 4),
             )
+
+    def _is_tight_zoom_detected(self, current: TargetState, frame_height: int) -> bool:
+        ratio = 0.0
+        if current.visible and current.bbox_xyxy is not None:
+            ratio = height_ratio(current.bbox_xyxy, frame_height)
+        elif self._tracker.target_memory.last_zoom_ratio > 0:
+            ratio = self._tracker.target_memory.last_zoom_ratio
+        return ratio >= self._config.tracking.recovery.tight_zoom_height_ratio_threshold
+
+    def _classify_loss_cause(
+        self,
+        current: TargetState,
+        memory: TargetMemory,
+        frame_width: int,
+        frame_height: int,
+        tight_zoom_detected: bool,
+    ) -> str:
+        if current.visible:
+            return "visible"
+        if current.stale_frame:
+            return "stale_frame"
+        if tight_zoom_detected:
+            return "over_zoom"
+        if memory.last_center is not None:
+            nx = memory.last_center[0] / max(1.0, frame_width)
+            ny = memory.last_center[1] / max(1.0, frame_height)
+            if nx <= 0.12 or nx >= 0.88 or ny <= 0.12 or ny >= 0.88:
+                return "off_frame_exit"
+        if memory.likely_occluded or memory.consecutive_missing_frames <= self._config.tracking.recovery.missing_frame_count_occluded:
+            return "occlusion"
+        return "detector_miss"

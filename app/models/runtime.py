@@ -25,6 +25,7 @@ class TrackingPhase(str, Enum):
     MONITORING = "monitoring"
     TEMP_LOST = "temp_lost"
     OCCLUDED = "occluded"
+    RECOVERY_ZOOM_OUT = "recovery_zoom_out"
     RECOVERY_LOCAL = "recovery_local"
     RECOVERY_WIDE = "recovery_wide"
     TRACKING = "tracking"
@@ -94,6 +95,9 @@ class TargetState:
     frame_age_seconds: float = 0.0
     stale_frame: bool = False
     prediction_confidence: float = 0.0
+    tight_zoom_detected: bool = False
+    recovery_settle_ticks_remaining: int = 0
+    loss_cause: str = "unknown"
     match_breakdown: dict[str, float] = field(default_factory=dict)
 
 
@@ -129,6 +133,10 @@ class TargetMemory:
     missing_started_ts: float | None = None
     likely_occluded: bool = False
     stale_frame_age_seconds: float = 0.0
+    recovery_settle_ticks_remaining: int = 0
+    tight_zoom_detected: bool = False
+    return_home_pending: bool = False
+    loss_cause: str = "unknown"
 
 
 def compatibility_status_for_phase(phase: TrackingPhase) -> TrackStatus:
@@ -143,6 +151,7 @@ def compatibility_status_for_phase(phase: TrackingPhase) -> TrackStatus:
     if phase in {
         TrackingPhase.TEMP_LOST,
         TrackingPhase.OCCLUDED,
+        TrackingPhase.RECOVERY_ZOOM_OUT,
         TrackingPhase.RECOVERY_LOCAL,
         TrackingPhase.RECOVERY_WIDE,
         TrackingPhase.LOST,

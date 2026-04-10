@@ -82,13 +82,21 @@ tracking:
     missing_frame_count_occluded: 5
     short_loss_timeout_seconds: 1.0
     occlusion_timeout_seconds: 2.5
+    recovery_zoom_out_start_timeout_seconds: 1.4
     recovery_local_timeout_seconds: 3.0
     recovery_wide_timeout_seconds: 6.0
     local_search_window_ratio: 0.16
+    recovery_zoom_out_step_pulse_ms: 140
+    recovery_zoom_out_settle_ticks: 2
+    tight_zoom_height_ratio_threshold: 0.42
     zoom_out_step_pulse_ms: 140
     max_recovery_zoom_steps: 3
     recovery_zoom_cooldown_seconds: 1.5
     zoom_out_first_min_height_ratio: 0.42
+    recovery_return_home_enabled: true
+    recovery_return_home_timeout_seconds: 8.0
+    recovery_return_preset_name: null
+    recovery_return_to_startup_preset_if_home_missing: true
     initial_confirm_frames: 3
     post_occlusion_confirm_frames: 2
     post_wide_recovery_confirm_frames: 4

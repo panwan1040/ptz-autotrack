@@ -27,6 +27,9 @@ def test_state_endpoint_exposes_tracking_phase_and_return_home_flags() -> None:
             status=TrackStatus.LOST,
             stable=True,
             visible=False,
+            tight_zoom_detected=True,
+            recovery_settle_ticks_remaining=2,
+            loss_cause="over_zoom",
         ),
         decision=ControlDecision(reason="idle", control_mode=ControlMode.HOLD_STABLE),
         current_ptz_action="return_home",
@@ -35,6 +38,7 @@ def test_state_endpoint_exposes_tracking_phase_and_return_home_flags() -> None:
         last_command_outcome={"detail": "ok"},
         return_home_enabled=True,
         return_home_issued=True,
+        extras={"recovery_zoom_steps": 2, "return_home_pending": True, "loss_age_seconds": 4.2},
     )
     state_store.set_snapshot(snapshot)
     app = create_app(make_config(), MetricsRegistry(), state_store)
@@ -51,6 +55,10 @@ def test_state_endpoint_exposes_tracking_phase_and_return_home_flags() -> None:
     assert data["current_ptz_action"] == "return_home"
     assert data["decision"]["control_mode"] == "hold_stable"
     assert data["ptz_runtime"]["pulse_active"] is False
+    assert data["target"]["tight_zoom_detected"] is True
+    assert data["target"]["recovery_settle_ticks_remaining"] == 2
+    assert data["target"]["loss_cause"] == "over_zoom"
+    assert data["extras"]["recovery_zoom_steps"] == 2
 
 
 def test_lifespan_starts_and_stops_tracking_service() -> None:

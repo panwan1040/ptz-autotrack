@@ -183,11 +183,25 @@ Lost-target behavior:
 
 - `TEMP_LOST`: hold lock, stop aggressive PTZ, and wait for a plausible reappearance near the predicted position
 - `OCCLUDED`: preserve identity longer, resist switching, and rely on appearance plus motion continuity
+- `RECOVERY_ZOOM_OUT`: if the target is missing and framing is still tight, widen FOV in bounded zoom-out steps before directional search
 - `RECOVERY_LOCAL`: search around the predicted window before escalating to broad recovery
 - `RECOVERY_WIDE`: zoom out in conservative steps before broader reacquisition
+- `RETURNING_HOME`: after failed staged recovery, return to the configured wide/home/startup preset and resume searching
 - `control.lost_behavior=hold`: stop issuing tracking motion and wait for reacquisition
 - `control.lost_behavior=zoom_out`: pulse zoom-out on cooldown to widen the scene for reacquisition
 - `control.lost_behavior=return_home`: optionally zoom out while lost, then return to the configured home preset after `control.return_home_timeout_seconds`
+
+Recovery escalation now favors visibility over passively waiting on identity continuity:
+
+1. `TEMP_LOST`
+2. `OCCLUDED`
+3. `RECOVERY_ZOOM_OUT`
+4. `RECOVERY_LOCAL`
+5. `RECOVERY_WIDE`
+6. `RETURNING_HOME`
+7. `SEARCHING`
+
+True zoom telemetry is usually unavailable on Dahua CGI, so the service uses the last known target height ratio as a zoom-tightness proxy. When that proxy says framing was tight at the moment of loss, the service prefers widening FOV first instead of waiting in a narrow scene.
 
 Handoff and monitoring:
 
@@ -263,6 +277,14 @@ If the camera overshoots:
 - lower `control_prediction_max_offset_ratio`
 - reduce `control_prediction_lead_ms` on CPU-only deployments if motion prediction gets too eager
 
+If recovery stays zoomed in too long:
+
+- lower `tracking.recovery.recovery_zoom_out_start_timeout_seconds`
+- lower `tracking.recovery.tight_zoom_height_ratio_threshold` so zoom-out recovery starts earlier
+- increase `tracking.recovery.max_recovery_zoom_steps`
+- increase `tracking.recovery.recovery_return_home_timeout_seconds` only if you want more local recovery before resetting wide
+- tune `tracking.recovery.recovery_zoom_out_settle_ticks` so each zoom-out step has time to reveal fresh detections before the next action
+
 If zoom oscillates:
 
 - widen zoom min/max bands
@@ -297,13 +319,16 @@ If zoom oscillates:
 - Increase `tracking.recovery.short_loss_timeout_seconds`
 - Increase `tracking.recovery.occlusion_timeout_seconds`
 - Check `tracking.appearance.enabled` and `tracking.appearance.min_similarity`
-- Use overlay or `/state` to confirm the system is reaching `temp_lost` or `occluded` instead of immediately switching
+- Use overlay or `/state` to confirm the system is reaching `temp_lost`, `occluded`, then `recovery_zoom_out` instead of immediately switching or waiting forever while still tightly zoomed
 
 ### Target is lost after zooming in too tightly
 - Lower `tracking.handoff.min_target_height_ratio` if handoff is happening too late
-- Increase `tracking.recovery.zoom_out_first_min_height_ratio`
+- Lower `tracking.recovery.recovery_zoom_out_start_timeout_seconds`
+- Lower `tracking.recovery.tight_zoom_height_ratio_threshold`
 - Increase `tracking.recovery.max_recovery_zoom_steps`
-- Confirm `RECOVERY_LOCAL` and `RECOVERY_WIDE` are issuing stepwise zoom-out before broader search
+- Confirm `RECOVERY_ZOOM_OUT` is active before `RECOVERY_LOCAL`
+- Increase `tracking.recovery.recovery_zoom_out_settle_ticks` if the service needs more time to reassess after each widening step
+- Confirm `RECOVERY_WIDE` eventually returns to a wide preset if configured
 
 ### Camera feels sluggish during movement
 - Confirm the scheduler is active by checking `/state.ptz_runtime.pulse_active`

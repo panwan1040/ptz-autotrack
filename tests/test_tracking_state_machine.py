@@ -69,4 +69,5 @@ def test_state_machine_requires_stricter_confirmation_after_loss() -> None:
 def test_phase_compatibility_mapping() -> None:
     assert compatibility_status_for_phase(TrackingPhase.CANDIDATE_LOCK) == TrackStatus.SEARCHING
     assert compatibility_status_for_phase(TrackingPhase.MONITORING) == TrackStatus.TRACKING
+    assert compatibility_status_for_phase(TrackingPhase.RECOVERY_ZOOM_OUT) == TrackStatus.LOST
     assert compatibility_status_for_phase(TrackingPhase.RETURNING_HOME) == TrackStatus.LOST

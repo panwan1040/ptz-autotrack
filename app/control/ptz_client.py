@@ -214,6 +214,9 @@ class DahuaPtzClient:
     def move_home(self) -> PtzCommandResult:
         return self._goto_preset(self._camera.home_preset_name, purpose="home")
 
+    def move_to_preset(self, preset_name: str, purpose: str = "custom") -> PtzCommandResult:
+        return self._goto_preset(preset_name, purpose=purpose)
+
     def startup_preset(self) -> PtzCommandResult:
         if not self._camera.startup_preset_name:
             return PtzCommandResult(

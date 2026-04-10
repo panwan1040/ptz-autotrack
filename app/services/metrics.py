@@ -22,8 +22,22 @@ class MetricsRegistry:
     ptz_zoom_success_count: Counter = Counter("ptz_zoom_success_total", "PTZ zoom successes")
     target_lost: Counter = Counter("ptz_target_lost_total", "Target lost events")
     occlusion_count: Counter = Counter("ptz_occlusion_total", "Occlusion events")
+    recovery_zoom_out_count: Counter = Counter("ptz_recovery_zoom_out_total", "Recovery zoom-out phase entries")
+    recovery_zoom_out_step_count: Counter = Counter("ptz_recovery_zoom_out_step_total", "Recovery zoom-out steps")
+    recovery_zoom_out_success_count: Counter = Counter(
+        "ptz_recovery_zoom_out_success_total",
+        "Recovery zoom-out phases that led to reacquisition",
+    )
+    recovery_zoom_out_abort_count: Counter = Counter(
+        "ptz_recovery_zoom_out_abort_total",
+        "Recovery zoom-out phases exited without reacquisition",
+    )
     local_recovery_count: Counter = Counter("ptz_local_recovery_total", "Local recovery entries")
     wide_recovery_count: Counter = Counter("ptz_wide_recovery_total", "Wide recovery entries")
+    return_home_after_loss_count: Counter = Counter(
+        "ptz_return_home_after_loss_total",
+        "Return-to-preset actions issued after failed recovery",
+    )
     successful_reacquisition_count: Counter = Counter(
         "ptz_successful_reacquisition_total",
         "Successful target reacquisitions",
@@ -42,6 +56,10 @@ class MetricsRegistry:
     time_to_reacquire_seconds: Histogram = Histogram(
         "ptz_time_to_reacquire_seconds",
         "Time from target loss to reacquisition in seconds",
+    )
+    loss_to_first_zoomout_seconds: Histogram = Histogram(
+        "ptz_loss_to_first_zoomout_seconds",
+        "Time from target loss to first recovery zoom-out step in seconds",
     )
     active_pulse_duration_ms: Gauge = Gauge("ptz_active_pulse_duration_ms", "Current active pulse duration in ms")
     prediction_used_count: Counter = Counter("ptz_prediction_used_total", "Predictive control decisions")

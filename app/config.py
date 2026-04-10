@@ -118,13 +118,21 @@ class RecoverySection(BaseModel):
     missing_frame_count_occluded: int = 5
     short_loss_timeout_seconds: float = 1.0
     occlusion_timeout_seconds: float = 2.5
+    recovery_zoom_out_start_timeout_seconds: float = 1.4
     recovery_local_timeout_seconds: float = 3.0
     recovery_wide_timeout_seconds: float = 6.0
     local_search_window_ratio: float = 0.16
+    recovery_zoom_out_step_pulse_ms: int = 140
+    recovery_zoom_out_settle_ticks: int = 2
+    tight_zoom_height_ratio_threshold: float = 0.42
     zoom_out_step_pulse_ms: int = 140
     max_recovery_zoom_steps: int = 3
     recovery_zoom_cooldown_seconds: float = 1.5
     zoom_out_first_min_height_ratio: float = 0.42
+    recovery_return_home_enabled: bool = True
+    recovery_return_home_timeout_seconds: float = 8.0
+    recovery_return_preset_name: str | None = None
+    recovery_return_to_startup_preset_if_home_missing: bool = True
     initial_confirm_frames: int = 3
     post_occlusion_confirm_frames: int = 2
     post_wide_recovery_confirm_frames: int = 4
@@ -272,6 +280,12 @@ class AppConfig(BaseModel):
             raise ValueError("tracking.handoff.inner_dead_zone_x must be between 0 and 0.5")
         if self.tracking.handoff.inner_dead_zone_y <= 0 or self.tracking.handoff.inner_dead_zone_y >= 0.5:
             raise ValueError("tracking.handoff.inner_dead_zone_y must be between 0 and 0.5")
+        if self.tracking.recovery.recovery_zoom_out_settle_ticks < 0:
+            raise ValueError("tracking.recovery.recovery_zoom_out_settle_ticks must be non-negative")
+        if self.tracking.recovery.recovery_zoom_out_start_timeout_seconds < 0:
+            raise ValueError("tracking.recovery.recovery_zoom_out_start_timeout_seconds must be non-negative")
+        if self.tracking.recovery.tight_zoom_height_ratio_threshold <= 0:
+            raise ValueError("tracking.recovery.tight_zoom_height_ratio_threshold must be positive")
         return self
 
     def sanitized_dump(self) -> dict[str, object]:

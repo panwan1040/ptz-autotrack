@@ -48,11 +48,15 @@ class DummyTracker:
     def update(self, detections, frame_width, frame_height, now):  # pragma: no cover - unused in these tests
         raise NotImplementedError
 
+    def clear_target_memory(self) -> None:
+        self.target_memory = TargetMemory()
+
 
 class DummyPtz:
     def __init__(self) -> None:
         self.starts: list[str] = []
         self.home_moves = 0
+        self.custom_preset_moves: list[str] = []
         self.stop_calls = 0
         self.active_direction = None
 
@@ -69,6 +73,10 @@ class DummyPtz:
     def move_home(self) -> PtzCommandResult:
         self.home_moves += 1
         return PtzCommandResult(True, "preset", "home", 0, True, detail="ok")
+
+    def move_to_preset(self, preset_name: str, purpose: str = "custom") -> PtzCommandResult:
+        self.custom_preset_moves.append(f"{purpose}:{preset_name}")
+        return PtzCommandResult(True, "preset", preset_name, 0, True, detail="ok")
 
     def stop(self, direction=None) -> PtzCommandResult:
         self.stop_calls += 1
@@ -99,7 +107,34 @@ def make_service(control: ControlSection) -> tuple[TrackingService, DummyPtz]:
     return service, ptz
 
 
-def test_recovery_wide_zoom_out_behavior() -> None:
+def make_service_with_tracking(
+    control: ControlSection,
+    tracking: TrackingSection,
+    *,
+    home_preset_name: str | None = "Home",
+    startup_preset_name: str | None = None,
+) -> tuple[TrackingService, DummyPtz]:
+    ptz = DummyPtz()
+    config = AppConfig(
+        app=AppSection(api=ApiConfig(enabled=False)),
+        camera=CameraSection(
+            host="1.2.3.4",
+            username="admin",
+            password=SecretStr("secret"),
+            home_preset_name=home_preset_name,
+            startup_preset_name=startup_preset_name,
+        ),
+        video=VideoSection(),
+        tracking=tracking,
+        control=control,
+        ptz=PtzSection(),
+        snapshots=SnapshotSection(on_target_acquired=False, on_target_lost=False),
+    )
+    service = TrackingService(config, DummyReader(), DummyDetector(), DummyTracker(), ptz)
+    return service, ptz
+
+
+def test_recovery_zoom_out_behavior_when_loss_occurs_while_tightly_zoomed() -> None:
     service, ptz = make_service(ControlSection(lost_behavior="zoom_out", lost_zoom_out_enabled=True))
     service._tracker.target_memory.track_id = 3
     service._tracker.target_memory.last_confirmed_ts = 1.0
@@ -134,7 +169,7 @@ def test_recovery_wide_zoom_out_behavior() -> None:
 
     assert ptz.stop_calls == 0
     assert ptz.starts == ["ZoomWide"]
-    assert service._tracking_phase == TrackingPhase.RECOVERY_WIDE
+    assert service._tracking_phase == TrackingPhase.RECOVERY_ZOOM_OUT
 
 
 def test_return_home_after_prolonged_loss() -> None:
@@ -239,6 +274,87 @@ def test_stale_frame_blocks_local_recovery_motion() -> None:
 
     assert ptz.starts == []
     assert service._last_skip_reason == "stale_frame_blocks_local_recovery"
+
+
+def test_tight_zoom_loss_escalates_to_recovery_zoom_out() -> None:
+    tracking = TrackingSection(
+        recovery={
+            "recovery_zoom_out_start_timeout_seconds": 1.0,
+            "recovery_zoom_out_settle_ticks": 2,
+            "tight_zoom_height_ratio_threshold": 0.40,
+        }
+    )
+    service, ptz = make_service_with_tracking(ControlSection(), tracking)
+    service._tracker.target_memory.track_id = 9
+    service._tracker.target_memory.last_confirmed_ts = 1.0
+    service._tracker.target_memory.missing_started_ts = 1.0
+    service._tracker.target_memory.last_zoom_ratio = 0.5
+    service._tracker.target_memory.consecutive_missing_frames = 6
+    current = TargetState(track_id=9, bbox_xyxy=None, status=TrackStatus.LOST, stable=True, visible=False)
+
+    service._handle_tracking_state(
+        np.zeros((540, 960, 3), dtype=np.uint8),
+        TargetState(track_id=9, bbox_xyxy=(420, 120, 520, 360), status=TrackStatus.TRACKING, stable=True, visible=True),
+        current,
+        ControlDecision(reason="idle"),
+        2.2,
+        960,
+        540,
+        0,
+    )
+
+    assert service._tracking_phase == TrackingPhase.RECOVERY_ZOOM_OUT
+    assert current.tight_zoom_detected is True
+    assert current.loss_cause == "over_zoom"
+    assert ptz.starts == ["ZoomWide"]
+    assert service._tracker.target_memory.recovery_zoom_steps == 1
+    assert service._tracker.target_memory.recovery_settle_ticks_remaining == 2
+
+
+def test_recovery_zoom_out_settles_before_issuing_next_step() -> None:
+    tracking = TrackingSection(recovery={"recovery_zoom_out_settle_ticks": 2})
+    service, ptz = make_service_with_tracking(ControlSection(), tracking)
+    service._tracking_phase = TrackingPhase.RECOVERY_ZOOM_OUT
+    service._tracker.target_memory.recovery_zoom_steps = 1
+    service._tracker.target_memory.recovery_settle_ticks_remaining = 2
+    service._tracker.target_memory.tight_zoom_detected = True
+    target = TargetState(
+        track_id=3,
+        bbox_xyxy=None,
+        status=TrackStatus.LOST,
+        stable=True,
+        visible=False,
+        frame_age_seconds=0.05,
+    )
+
+    service._apply_phase_behavior(np.zeros((540, 960, 3), dtype=np.uint8), target, ControlDecision(reason="idle"), 3.0, 960, 540)
+
+    assert ptz.starts == []
+    assert service._tracker.target_memory.recovery_settle_ticks_remaining == 1
+    assert service._last_skip_reason == "recovery_zoom_out_settling"
+
+
+def test_recovery_wide_returns_to_configured_preset_after_timeout() -> None:
+    tracking = TrackingSection(
+        recovery={
+            "recovery_return_home_enabled": True,
+            "recovery_return_home_timeout_seconds": 5.0,
+            "recovery_return_preset_name": "WideSearch",
+        }
+    )
+    service, ptz = make_service_with_tracking(ControlSection(), tracking, home_preset_name=None)
+    service._tracking_phase = TrackingPhase.RECOVERY_WIDE
+    service._loss_started_at = 1.0
+    service._tracker.target_memory.track_id = 4
+    service._tracker.target_memory.last_confirmed_ts = 1.0
+    service._tracker.target_memory.last_zoom_ratio = 0.20
+    current = TargetState(track_id=4, bbox_xyxy=None, status=TrackStatus.LOST, stable=True, visible=False)
+
+    service._apply_phase_behavior(np.zeros((540, 960, 3), dtype=np.uint8), current, ControlDecision(reason="idle"), 7.0, 960, 540)
+
+    assert ptz.custom_preset_moves == ["recovery_return:WideSearch"]
+    assert service._tracking_phase == TrackingPhase.RETURNING_HOME
+    assert service._return_home_issued is True
 
 
 def test_handle_fatal_exception_saves_crash_snapshot_and_marks_fatal_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
