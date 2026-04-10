@@ -50,13 +50,20 @@ class DummyTracker:
 
 class DummyPtz:
     def __init__(self) -> None:
-        self.pulses: list[tuple[str, int]] = []
+        self.starts: list[str] = []
         self.home_moves = 0
         self.stop_calls = 0
+        self.active_direction = None
 
     def pulse(self, direction, pulse_ms: int) -> PtzCommandResult:
-        self.pulses.append((direction.value, pulse_ms))
-        return PtzCommandResult(True, "pulse", direction.value, pulse_ms, True, detail="ok")
+        self.starts.append(direction.value)
+        self.active_direction = direction
+        return PtzCommandResult(True, "pulse", direction.value, pulse_ms, True, detail="ok", issued=True, accepted=True)
+
+    def start(self, direction) -> PtzCommandResult:
+        self.starts.append(direction.value)
+        self.active_direction = direction
+        return PtzCommandResult(True, "start", direction.value, 0, False, detail="ok", issued=True, accepted=True)
 
     def move_home(self) -> PtzCommandResult:
         self.home_moves += 1
@@ -65,7 +72,9 @@ class DummyPtz:
     def stop(self, direction=None) -> PtzCommandResult:
         self.stop_calls += 1
         direction_name = direction.value if direction is not None else "Stop"
-        return PtzCommandResult(True, "stop", direction_name, 0, True, detail="ok")
+        if direction is not None and self.active_direction == direction:
+            self.active_direction = None
+        return PtzCommandResult(True, "stop", direction_name, 0, False, detail="ok", issued=True, accepted=True)
 
     def emergency_stop(self) -> None:
         pass
@@ -122,8 +131,8 @@ def test_recovery_wide_zoom_out_behavior() -> None:
         10,
     )
 
-    assert ptz.stop_calls == 1
-    assert ptz.pulses == [("ZoomWide", service._config.tracking.recovery.zoom_out_step_pulse_ms)]
+    assert ptz.stop_calls == 0
+    assert ptz.starts == ["ZoomWide"]
     assert service._tracking_phase == TrackingPhase.RECOVERY_WIDE
 
 
@@ -207,7 +216,7 @@ def test_handoff_phase_when_target_is_centered_and_large_enough() -> None:
 
     assert service._tracking_phase == TrackingPhase.HANDOFF
     assert current.handoff_ready is True
-    assert ptz.stop_calls >= 1
+    assert current.centered_frames >= service._config.tracking.handoff.stable_center_frames
 
 
 def test_stale_frame_blocks_local_recovery_motion() -> None:
@@ -227,5 +236,5 @@ def test_stale_frame_blocks_local_recovery_motion() -> None:
 
     service._apply_phase_behavior(np.zeros((540, 960, 3), dtype=np.uint8), current, ControlDecision(reason="idle"), 2.0, 960, 540)
 
-    assert ptz.pulses == []
+    assert ptz.starts == []
     assert service._last_skip_reason == "stale_frame_blocks_local_recovery"

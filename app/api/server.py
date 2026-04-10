@@ -68,6 +68,7 @@ def create_app(
             data["decision"]["move_direction"] = snapshot.decision.move_direction.value
         if snapshot.decision.zoom_direction:
             data["decision"]["zoom_direction"] = snapshot.decision.zoom_direction.value
+        data["decision"]["control_mode"] = snapshot.decision.control_mode.value
         return data
 
     @app.get("/config")

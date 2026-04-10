@@ -57,3 +57,10 @@ def test_lifecycle_uses_zooming_for_handoff_when_centered_but_still_small() -> N
     )
 
     assert phase == TrackingPhase.ZOOMING_FOR_HANDOFF
+
+
+def test_phase_policy_disables_pan_tilt_in_monitoring() -> None:
+    manager = LifecycleManager(TrackingSection())
+    policy = manager.policy_for(TrackingPhase.MONITORING)
+    assert policy.pan_tilt_allowed is False
+    assert policy.zoom_allowed is False

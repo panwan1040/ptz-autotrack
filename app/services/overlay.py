@@ -18,7 +18,10 @@ def draw_overlay(
     cx, cy = width // 2, height // 2
     dead_x = int(control.dead_zone_x * width)
     dead_y = int(control.dead_zone_y * height)
+    fine_x = int(control.fine_align_dead_zone_x * width)
+    fine_y = int(control.fine_align_dead_zone_y * height)
     cv2.rectangle(output, (cx - dead_x, cy - dead_y), (cx + dead_x, cy + dead_y), (0, 255, 255), 1)
+    cv2.rectangle(output, (cx - fine_x, cy - fine_y), (cx + fine_x, cy + fine_y), (0, 128, 255), 1)
     cv2.drawMarker(output, (cx, cy), (255, 255, 0), markerType=cv2.MARKER_CROSS, markerSize=20)
     for det in snapshot.detections:
         _draw_detection(output, det, (0, 255, 0))
@@ -40,10 +43,13 @@ def draw_overlay(
         f"stable={snapshot.target.stable}",
         f"visible={snapshot.target.visible} missing={snapshot.target.missing_frames}",
         f"handoff_ready={snapshot.target.handoff_ready}",
+        f"mode={snapshot.decision.control_mode.value}",
         f"ptz={snapshot.decision.move_direction.value if snapshot.decision.move_direction else 'idle'}",
         f"zoom={snapshot.decision.zoom_direction.value if snapshot.decision.zoom_direction else 'idle'}",
         f"reason={snapshot.target.selection_reason}",
         f"appearance={snapshot.target.appearance_similarity:.2f}",
+        f"pred_used={snapshot.decision.prediction_used} conf={snapshot.decision.prediction_confidence:.2f}",
+        f"pulse={snapshot.ptz_runtime.get('pulse_active', False)} dir={snapshot.ptz_runtime.get('active_ptz_direction')}",
         f"frame_age={snapshot.target.frame_age_seconds:.2f}s stale={snapshot.target.stale_frame}",
         f"fps={snapshot.extras.get('fps', 0):.1f}",
     ]

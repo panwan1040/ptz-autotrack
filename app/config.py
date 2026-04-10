@@ -183,6 +183,25 @@ class ControlSection(BaseModel):
     tick_hz: float = 5.0
     dead_zone_x: float = 0.10
     dead_zone_y: float = 0.12
+    fine_align_dead_zone_x: float = 0.04
+    fine_align_dead_zone_y: float = 0.05
+    coarse_align_threshold_x: float = 0.22
+    coarse_align_threshold_y: float = 0.24
+    stable_hold_frames: int = 3
+    fine_pulse_scale: float = 0.65
+    coarse_pulse_scale: float = 1.0
+    control_prediction_enabled: bool = True
+    control_prediction_lead_ms: int = 220
+    control_prediction_max_offset_ratio: float = 0.10
+    control_prediction_min_history_points: int = 2
+    zoom_compensation_enabled: bool = True
+    zoom_compensation_low_ratio: float = 0.24
+    zoom_compensation_medium_ratio: float = 0.36
+    zoom_compensation_high_ratio: float = 0.48
+    zoom_compensation_medium_scale: float = 0.70
+    zoom_compensation_high_scale: float = 0.45
+    control_stale_frame_reduce_aggression_seconds: float = 0.25
+    control_stale_frame_block_seconds: float = 0.60
     movement_cooldown_seconds: float = 0.25
     zoom_cooldown_seconds: float = 1.2
     aggressive_pan_threshold: float = 0.30
@@ -237,6 +256,16 @@ class AppConfig(BaseModel):
             raise ValueError("control.dead_zone_x must be between 0 and 0.5")
         if self.control.dead_zone_y <= 0 or self.control.dead_zone_y >= 0.5:
             raise ValueError("control.dead_zone_y must be between 0 and 0.5")
+        if self.control.fine_align_dead_zone_x <= 0 or self.control.fine_align_dead_zone_x >= self.control.dead_zone_x:
+            raise ValueError("control.fine_align_dead_zone_x must be positive and less than dead_zone_x")
+        if self.control.fine_align_dead_zone_y <= 0 or self.control.fine_align_dead_zone_y >= self.control.dead_zone_y:
+            raise ValueError("control.fine_align_dead_zone_y must be positive and less than dead_zone_y")
+        if self.control.coarse_align_threshold_x <= self.control.dead_zone_x or self.control.coarse_align_threshold_x >= 0.5:
+            raise ValueError("control.coarse_align_threshold_x must be greater than dead_zone_x and less than 0.5")
+        if self.control.coarse_align_threshold_y <= self.control.dead_zone_y or self.control.coarse_align_threshold_y >= 0.5:
+            raise ValueError("control.coarse_align_threshold_y must be greater than dead_zone_y and less than 0.5")
+        if self.control.control_stale_frame_reduce_aggression_seconds >= self.control.control_stale_frame_block_seconds:
+            raise ValueError("control stale-frame reduce threshold must be less than block threshold")
         if self.control.zoom.min_height_ratio >= self.control.zoom.max_height_ratio:
             raise ValueError("zoom min_height_ratio must be less than max_height_ratio")
         if self.tracking.handoff.inner_dead_zone_x <= 0 or self.tracking.handoff.inner_dead_zone_x >= 0.5:

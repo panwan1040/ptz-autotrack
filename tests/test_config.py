@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+from app.config import AppConfig
 from app.config import load_yaml_config, mask_secret_in_url
 
 
@@ -33,3 +36,13 @@ def test_load_yaml_config(tmp_path: Path) -> None:
     config_path.write_text("camera:\n  host: 1.2.3.4\n  username: admin\n  password: secret\n")
     data = load_yaml_config(config_path)
     assert data["camera"]["host"] == "1.2.3.4"
+
+
+def test_control_config_validates_fine_dead_zone_against_outer_dead_zone() -> None:
+    with pytest.raises(ValueError):
+        AppConfig.model_validate(
+            {
+                "camera": {"host": "1.2.3.4", "username": "admin", "password": "secret"},
+                "control": {"dead_zone_x": 0.05, "fine_align_dead_zone_x": 0.06},
+            }
+        )

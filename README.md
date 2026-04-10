@@ -22,11 +22,14 @@ app/
   api/server.py
   camera/rtsp_reader.py
   control/
+    control_intent.py
     control_logic.py
     handoff_manager.py
     lifecycle_manager.py
     monitoring_policy.py
     ptz_client.py
+    ptz_runtime_state.py
+    ptz_scheduler.py
     smoothing.py
     zoom_logic.py
   detection/yolo_detector.py
@@ -129,15 +132,25 @@ When the API is enabled, Uvicorn stays in the main process/main thread and the t
 
 ## PTZ Behavior
 
-The control loop uses pulse-based PTZ actions instead of continuous motion:
+The control loop uses pulse-based PTZ actions instead of continuous motion, but pulses are now scheduled non-blockingly:
 
-- Small error -> shorter pulse, larger error -> longer pulse
+- Control produces a PTZ intent, and a scheduler owns start/stop timing
+- Start commands are issued immediately, but due-stop handling is polled from the main loop so frame processing stays fresh while a pulse is active
+- Small error -> fine align pulse, larger error -> coarse align pulse
+- Tight zoom reduces pan/tilt pulse scale to reduce overshoot
 - Diagonal movement is preserved, but dominant-axis correction wins when one axis is clearly stronger
-- Duplicate same-direction starts are suppressed and active motion is stopped before direction changes
+- Duplicate same-direction starts extend the active pulse instead of blocking the loop
+- Active motion is stopped before direction changes, and interruption is explicit in scheduler state/metrics
 - Zoom-in is blocked when the target is still far from center unless explicitly allowed
 - Shutdown always sends emergency stop attempts
 - `digest_or_basic` auth can fall back to basic auth on 401 responses
 - The control loop uses fixed-rate scheduling, so PTZ pulse time does not add a second unconditional sleep at the end of a tick
+
+PTZ metrics are now more truthful:
+
+- attempts, successes, failures, skips, interruptions, and partial failures are counted separately
+- movement and zoom cooldowns are only marked on real issued-success outcomes
+- dry-run and duplicate-extension behavior are surfaced as accepted/skipped rather than fake successes
 
 ## Tracking Policy
 
@@ -157,6 +170,14 @@ Selection and switching behavior:
 - Short target loss keeps target memory alive instead of immediately switching identities
 - The API state now exposes whether the target is stable, visible, handoff-ready, stale, and why a selection/state transition happened
 - Runtime phase is richer than compatibility status: `searching`, `candidate_lock`, `centering`, `zooming_for_handoff`, `handoff`, `monitoring`, `temp_lost`, `occluded`, `recovery_local`, `recovery_wide`, `lost`, `returning_home`, and `error`
+
+Phase semantics:
+
+- `CENTERING`: pan/tilt corrections are allowed
+- `ZOOMING_FOR_HANDOFF`: centering is good enough that zoom can refine framing
+- `HANDOFF`: external PTZ stops and the system prepares to let the camera continue
+- `MONITORING`: external AI watches continuity and only re-enters recovery if handoff breaks
+- `TRACKING`: retained only as a legacy compatibility phase; active runtime behavior uses the more explicit phases above
 
 Lost-target behavior:
 
@@ -218,12 +239,14 @@ Start conservative:
 
 - low PTZ speed
 - larger dead zone
+- smaller `fine_pulse_scale`
 - longer zoom cooldown
 - detect-only until target selection is stable
 
 If tracking jitters:
 
 - increase `dead_zone_x` / `dead_zone_y`
+- increase `fine_align_dead_zone_x` / `fine_align_dead_zone_y`
 - raise `startup_stable_frames`
 - raise `tracking.min_persist_frames` to make new targets prove themselves longer
 - increase `movement_cooldown_seconds`
@@ -231,6 +254,14 @@ If tracking jitters:
 - increase `tracking.recovery.short_loss_timeout_seconds` if brief tree/pole occlusions are being treated too aggressively
 - raise `tracking.appearance.min_similarity` if wrong-person handoffs happen after occlusion
 - increase `tracking.recovery.replacement_score_margin` if the system is still too willing to switch people
+
+If the camera overshoots:
+
+- lower `coarse_pulse_scale`
+- raise `coarse_align_threshold_x` / `coarse_align_threshold_y`
+- reduce `zoom_compensation_medium_scale` / `zoom_compensation_high_scale`
+- lower `control_prediction_max_offset_ratio`
+- reduce `control_prediction_lead_ms` on CPU-only deployments if motion prediction gets too eager
 
 If zoom oscillates:
 
@@ -274,6 +305,12 @@ If zoom oscillates:
 - Increase `tracking.recovery.max_recovery_zoom_steps`
 - Confirm `RECOVERY_LOCAL` and `RECOVERY_WIDE` are issuing stepwise zoom-out before broader search
 
+### Camera feels sluggish during movement
+- Confirm the scheduler is active by checking `/state.ptz_runtime.pulse_active`
+- Watch `ptz_control_loop_elapsed_ms` and `ptz_control_loop_overrun_total`
+- Reduce pulse sizes before increasing tick rate if CPU is already tight
+- Check `ptz_command_attempt_total` versus `ptz_command_success_total` to see whether cooldowns or skips are the real bottleneck
+
 ### HTTP PTZ fails
 - Check Dahua CGI auth mode
 - Confirm camera user has PTZ privilege
@@ -284,4 +321,4 @@ If zoom oscillates:
 - The default backend is still an in-repo tracker, not ByteTrack/BoT-SORT. It is much stronger than naive reassociation, but long full occlusions and severe camera jumps can still break identity continuity.
 - The appearance continuity layer is histogram-based by default. It is fast and practical for production, but it is weaker than a learned ReID model when clothing/background colors are similar.
 - Home-preset behavior depends on the Dahua model supporting the configured preset name. The PTZ client keeps this isolated so an ONVIF backend can be dropped in later without changing the service/control layers.
-- PTZ pulse execution is still synchronous by design for safety, so one large pulse can consume most of a control tick, but the scheduler no longer adds a second unconditional sleep afterward.
+- Dahua CGI latency and motor latency still bound how fast the camera can react. The non-blocking scheduler keeps the control loop fresh, but it cannot eliminate physical PTZ lag from the camera itself.

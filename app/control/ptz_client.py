@@ -31,6 +31,10 @@ class PtzCommandResult:
     http_status: int | None = None
     error: str | None = None
     detail: str | None = None
+    attempted: bool = True
+    accepted: bool = False
+    partial_failure: bool = False
+    skipped: bool = False
 
 
 class DahuaPtzClient:
@@ -74,6 +78,10 @@ class DahuaPtzClient:
     def is_dry_run(self) -> bool:
         return self._config.dry_run or self._detect_only
 
+    @property
+    def active_direction(self) -> PtzDirection | None:
+        return self._active_direction
+
     def pulse(self, direction: PtzDirection, pulse_ms: int) -> PtzCommandResult:
         if direction == PtzDirection.STOP:
             return self.stop()
@@ -86,6 +94,8 @@ class DahuaPtzClient:
                 dry_run=self.is_dry_run,
                 issued=False,
                 detail="pulse_duration_not_positive",
+                accepted=True,
+                skipped=True,
             )
 
         start_result = self.start(direction)
@@ -101,6 +111,9 @@ class DahuaPtzClient:
                 http_status=start_result.http_status,
                 error=start_result.error,
                 detail=start_result.detail,
+                attempted=start_result.attempted,
+                accepted=start_result.accepted,
+                skipped=start_result.skipped,
             )
 
         stop_result: PtzCommandResult | None = None
@@ -121,6 +134,8 @@ class DahuaPtzClient:
                 http_status=stop_result.http_status,
                 error=stop_result.error,
                 detail="stop_failed_after_pulse",
+                accepted=False,
+                partial_failure=True,
             )
 
         return PtzCommandResult(
@@ -132,6 +147,7 @@ class DahuaPtzClient:
             issued=start_result.issued or bool(stop_result and stop_result.issued),
             auth_mode=start_result.auth_mode,
             detail="pulse_completed",
+            accepted=True,
         )
 
     def start(self, direction: PtzDirection) -> PtzCommandResult:
@@ -145,6 +161,8 @@ class DahuaPtzClient:
                 issued=False,
                 auth_mode=self._auth_mode_in_use,
                 detail="duplicate_start_suppressed",
+                accepted=True,
+                skipped=True,
             )
         if self._active_direction is not None and self._active_direction != direction:
             stop_result = self.stop(self._active_direction)
@@ -171,6 +189,8 @@ class DahuaPtzClient:
                 issued=False,
                 auth_mode=self._auth_mode_in_use,
                 detail="debounced_start",
+                accepted=True,
+                skipped=True,
             )
         return self._request("start", direction)
 
@@ -186,6 +206,8 @@ class DahuaPtzClient:
                 issued=False,
                 auth_mode=self._auth_mode_in_use,
                 detail="no_active_direction",
+                accepted=True,
+                skipped=True,
             )
         return self._request("stop", target)
 
@@ -238,6 +260,7 @@ class DahuaPtzClient:
                 auth_mode=self._auth_mode_in_use,
                 detail=f"{purpose}_preset_not_configured",
                 error="preset not set",
+                accepted=False,
             )
         if self.is_dry_run:
             logger.info("ptz_preset_dry_run", purpose=purpose, preset=preset_name)
@@ -247,8 +270,10 @@ class DahuaPtzClient:
                 direction="GotoPreset",
                 pulse_ms=0,
                 dry_run=True,
+                issued=False,
                 auth_mode=self._auth_mode_in_use,
                 detail=f"{purpose}_preset_dry_run",
+                accepted=True,
             )
         url = f"{self._camera.http_base_url}/cgi-bin/ptz.cgi"
         params = {
@@ -271,8 +296,10 @@ class DahuaPtzClient:
                 direction=direction.value,
                 pulse_ms=0,
                 dry_run=True,
+                issued=False,
                 auth_mode=self._auth_mode_in_use,
                 detail="dry_run",
+                accepted=True,
             )
         url = f"{self._camera.http_base_url}/cgi-bin/ptz.cgi"
         params = {
@@ -332,6 +359,7 @@ class DahuaPtzClient:
                     auth_mode=self._auth_mode_in_use,
                     http_status=last_status,
                     detail="request_sent",
+                    accepted=True,
                 )
             except requests.HTTPError as exc:
                 last_status = getattr(exc.response, "status_code", last_status)
@@ -363,6 +391,7 @@ class DahuaPtzClient:
             http_status=last_status,
             error=last_error,
             detail="request_failed",
+            accepted=False,
         )
 
     def _maybe_fallback_to_basic(self, status_code: int | None) -> bool:

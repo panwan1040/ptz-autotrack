@@ -45,6 +45,14 @@ class PtzDirection(str, Enum):
     STOP = "Stop"
 
 
+class ControlMode(str, Enum):
+    IDLE = "idle"
+    COARSE_ALIGN = "coarse_align"
+    FINE_ALIGN = "fine_align"
+    HOLD_STABLE = "hold_stable"
+    RECOVERY = "recovery"
+
+
 @dataclass(slots=True)
 class Detection:
     bbox_xyxy: tuple[float, float, float, float]
@@ -80,8 +88,10 @@ class TargetState:
     missing_frames: int = 0
     visible_frames: int = 0
     handoff_ready: bool = False
+    centered_frames: int = 0
     frame_age_seconds: float = 0.0
     stale_frame: bool = False
+    prediction_confidence: float = 0.0
     match_breakdown: dict[str, float] = field(default_factory=dict)
 
 
@@ -147,9 +157,15 @@ class ControlDecision:
     zoom_direction: PtzDirection | None = None
     zoom_pulse_ms: int = 0
     reason: str = "idle"
+    control_mode: ControlMode = ControlMode.IDLE
     normalized_error_x: float = 0.0
     normalized_error_y: float = 0.0
     target_height_ratio: float = 0.0
+    predicted_target_center: tuple[float, float] | None = None
+    prediction_used: bool = False
+    prediction_confidence: float = 0.0
+    zoom_compensation_scale: float = 1.0
+    stale_frame_policy_state: str = "fresh"
 
 
 @dataclass(slots=True)
@@ -163,6 +179,8 @@ class TrackingSnapshot:
     inference_latency_ms: float = 0.0
     current_ptz_action: str | None = None
     last_skip_reason: str | None = None
+    ptz_runtime: dict[str, Any] = field(default_factory=dict)
+    last_command_outcome: dict[str, Any] = field(default_factory=dict)
     return_home_enabled: bool = False
     return_home_issued: bool = False
     extras: dict[str, Any] = field(default_factory=dict)

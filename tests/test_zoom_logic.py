@@ -9,6 +9,7 @@ def make_target(bbox):
         bbox_xyxy=bbox,
         confidence=0.9,
         persist_frames=5,
+        centered_frames=5,
         last_seen_ts=1.0,
         status=TrackStatus.TRACKING,
         stable=True,
@@ -38,3 +39,12 @@ def test_zoom_is_blocked_when_recenter_first_is_needed() -> None:
     )
     assert decision.zoom_direction is None
     assert decision.reason == "zoom_blocked_recenter_first"
+
+
+def test_zoom_is_blocked_until_alignment_is_stable() -> None:
+    controller = ZoomController(ControlSection())
+    target = make_target((100, 100, 200, 150))
+    target.centered_frames = 0
+    decision = controller.decide(target, 540, pan_tilt_active=False)
+    assert decision.zoom_direction is None
+    assert decision.reason == "zoom_blocked_align_first"

@@ -17,6 +17,7 @@ def test_dry_run_pulse() -> None:
     assert result.success is True
     assert result.dry_run is True
     assert result.action == "pulse"
+    assert result.issued is False
 
 
 def test_http_call_on_real_mode() -> None:
@@ -52,4 +53,5 @@ def test_duplicate_start_is_suppressed_when_same_direction_is_active() -> None:
     assert first.success is True
     assert second.success is True
     assert second.issued is False
+    assert second.skipped is True
     assert second.detail == "duplicate_start_suppressed"

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.config import ControlSection
-from app.models.runtime import ControlDecision, PtzDirection, TargetState, TrackStatus
+from app.models.runtime import ControlDecision, ControlMode, PtzDirection, TargetState, TrackStatus
 from app.utils.geometry import height_ratio
 
 
@@ -24,11 +24,18 @@ class ZoomController:
         decision = ControlDecision(reason="zoom_idle")
         if not self.config.zoom.enabled or target.status != TrackStatus.TRACKING or target.bbox_xyxy is None:
             return decision
+        if target.frame_age_seconds >= self.config.control_stale_frame_block_seconds:
+            decision.reason = "zoom_blocked_stale_frame"
+            decision.stale_frame_policy_state = "blocked"
+            return decision
         if pan_tilt_active and not self.config.allow_zoom_during_pan_tilt:
             decision.reason = "zoom_blocked_pan_tilt_active"
             return decision
         if target.persist_frames < 2:
             decision.reason = "zoom_blocked_target_unstable"
+            return decision
+        if target.centered_frames < self.config.stable_hold_frames and target.handoff_ready is False:
+            decision.reason = "zoom_blocked_align_first"
             return decision
 
         ratio = height_ratio(target.bbox_xyxy, frame_height)
@@ -43,10 +50,12 @@ class ZoomController:
             decision.zoom_direction = PtzDirection.ZOOM_IN
             decision.zoom_pulse_ms = self._zoom_pulse_ms(target.persist_frames)
             decision.reason = "zoom_in_target_small"
+            decision.control_mode = ControlMode.FINE_ALIGN
         elif ratio > (self.config.zoom.max_height_ratio + self.config.zoom.hysteresis):
             decision.zoom_direction = PtzDirection.ZOOM_OUT
             decision.zoom_pulse_ms = self.config.zoom_pulse_ms
             decision.reason = "zoom_out_target_large"
+            decision.control_mode = ControlMode.FINE_ALIGN
         return decision
 
     def _zoom_pulse_ms(self, persist_frames: int) -> int:

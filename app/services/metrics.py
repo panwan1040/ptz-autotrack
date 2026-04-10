@@ -10,6 +10,16 @@ class MetricsRegistry:
     frames_received: Counter = Counter("ptz_frames_received_total", "Frames received")
     frames_processed: Counter = Counter("ptz_frames_processed_total", "Frames processed")
     ptz_commands: Counter = Counter("ptz_commands_total", "PTZ commands issued")
+    ptz_command_attempt_count: Counter = Counter("ptz_command_attempt_total", "PTZ command attempts")
+    ptz_command_success_count: Counter = Counter("ptz_command_success_total", "PTZ command successes")
+    ptz_command_failure_count: Counter = Counter("ptz_command_failure_total", "PTZ command failures")
+    ptz_command_skipped_count: Counter = Counter("ptz_command_skipped_total", "PTZ command skips")
+    ptz_command_interrupted_count: Counter = Counter("ptz_command_interrupted_total", "PTZ command interruptions")
+    ptz_partial_failure_count: Counter = Counter("ptz_partial_failure_total", "PTZ partial failures")
+    ptz_move_attempt_count: Counter = Counter("ptz_move_attempt_total", "PTZ move attempts")
+    ptz_move_success_count: Counter = Counter("ptz_move_success_total", "PTZ move successes")
+    ptz_zoom_attempt_count: Counter = Counter("ptz_zoom_attempt_total", "PTZ zoom attempts")
+    ptz_zoom_success_count: Counter = Counter("ptz_zoom_success_total", "PTZ zoom successes")
     target_lost: Counter = Counter("ptz_target_lost_total", "Target lost events")
     occlusion_count: Counter = Counter("ptz_occlusion_total", "Occlusion events")
     local_recovery_count: Counter = Counter("ptz_local_recovery_total", "Local recovery entries")
@@ -26,10 +36,22 @@ class MetricsRegistry:
     inference_latency_ms: Histogram = Histogram(
         "ptz_inference_latency_ms", "YOLO inference latency in ms"
     )
+    control_loop_elapsed_ms: Histogram = Histogram("ptz_control_loop_elapsed_ms", "Control loop elapsed time in ms")
+    control_loop_overrun_count: Counter = Counter("ptz_control_loop_overrun_total", "Control loop overruns")
+    frame_age_ms: Histogram = Histogram("ptz_frame_age_ms", "Frame age in ms at decision time")
     time_to_reacquire_seconds: Histogram = Histogram(
         "ptz_time_to_reacquire_seconds",
         "Time from target loss to reacquisition in seconds",
     )
+    active_pulse_duration_ms: Gauge = Gauge("ptz_active_pulse_duration_ms", "Current active pulse duration in ms")
+    prediction_used_count: Counter = Counter("ptz_prediction_used_total", "Predictive control decisions")
+    stale_frame_suppressed_action_count: Counter = Counter(
+        "ptz_stale_frame_suppressed_action_total",
+        "Actions suppressed because of stale frames",
+    )
+    fine_align_count: Counter = Counter("ptz_fine_align_total", "Fine alignment decisions")
+    coarse_align_count: Counter = Counter("ptz_coarse_align_total", "Coarse alignment decisions")
+    stable_hold_count: Counter = Counter("ptz_stable_hold_total", "Stable hold decisions")
     tracking_status: Gauge = Gauge("ptz_tracking_status", "0=searching,1=tracking,2=lost")
     tracking_phase: Gauge = Gauge(
         "ptz_tracking_phase",

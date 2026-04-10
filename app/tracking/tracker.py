@@ -72,6 +72,7 @@ class Tracker:
         self._state.predicted_center = self._memory.predicted_center
         self._state.predicted_window = self._memory.predicted_window
         self._state.appearance_similarity = self._memory.appearance_similarity
+        self._state.prediction_confidence = self._memory.prediction_confidence
         self._state.match_breakdown = {}
         if selection.candidate is not None and selection.candidate.match_breakdown is not None:
             self._state.match_breakdown = selection.candidate.match_breakdown
